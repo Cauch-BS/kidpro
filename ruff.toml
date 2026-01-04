@@ -1,0 +1,42 @@
+preview = true
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    "refs",
+    ".mypy_cache",
+]
+line-length = 88
+indent-width = 2
+target-version = "py310"
+
+[lint]
+ignore = [
+    # Unnecessary collection call
+    "C408",
+    # Unnecessary map usage
+    "C417",
+    # Object names too complex
+    "C901",
+    # Local variable is assigned to but never used
+    "F841",
+    # Raise with from clause inside except block
+    "B904",
+    # Zip without explicit strict parameter
+    "B905",
+]
+select = [
+    "B9",
+    "C",
+    "F",
+    "W",
+    "YTT",
+    "ASYNC",
+    "E225",
+    "E227",
+    "E228",
+]
+
+[lint.mccabe]
+max-complexity = 18
