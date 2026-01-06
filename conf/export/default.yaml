@@ -1,0 +1,8 @@
+save_resolved_config: true
+resolved_config_name: config_resolved.yaml
+
+save_env_json: true
+env_json_name: training_env.json
+
+save_best_weights: true
+best_weights_name: best_model.pt

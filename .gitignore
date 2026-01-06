@@ -180,3 +180,6 @@ pyrightconfig.json
 # pixi environments
 .pixi
 *.egg-info
+
+# parameters
+*.pt

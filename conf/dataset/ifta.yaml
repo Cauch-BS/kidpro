@@ -1,0 +1,4 @@
+defaults:
+  - /paths: ifta
+  - /task: ifta
+  - /data: default
