@@ -1,3 +1,4 @@
+import logging
 import multiprocessing
 from functools import partial
 from pathlib import Path
@@ -23,6 +24,15 @@ OUT_PARS  = {
 
 ALLOWED_MAGS = {2.5, 10.0, 40.0}
 
+logging.basicConfig(
+    filename='process.log',
+    filemode='a',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+logger = logging.getLogger(__name__)
+
 def _process_one_slide(
     xml_path: Path,
     out_dir: Path,
@@ -32,23 +42,34 @@ def _process_one_slide(
     patch_size: int,
     stride: int,
     overlap_th: float
-) -> str | None:
+) -> None:
     """
     Worker function to process a single slide.
-    Returns the slide name if successful, or None if failed.
+    Raises exceptions (FileNotFoundError, ValueError) on failure instead of returning strings.
     """
+    # Note: No broad try/except block here. We let unexpected errors propagate
+    # so the scheduler/caller can handle the traceback.
+
+    svs_path = SVS_DIR / f"{xml_path.stem}.svs"
+
+    # --- Check 1: File Existence ---
+    if not svs_path.exists():
+        msg = f"Missing SVS file: {xml_path.stem}"
+        logger.error(msg)
+        raise FileNotFoundError(msg)
+
+    name_ = svs_path.stem
+
+    # --- Check 2: Name Validation ---
+    if len(name_) != 14:
+        msg = f"Invalid name length (expected 14): {name_}"
+        logger.error(msg)
+        raise ValueError(msg)
+
+    slide = openslide.OpenSlide(str(svs_path))
+
+    # Ensure slide is closed even if errors occur during processing
     try:
-        svs_path = SVS_DIR / f"{xml_path.stem}.svs"
-
-        if not svs_path.exists():
-            return f"[WARN] Missing SVS: {xml_path.stem}"
-
-        name_ = svs_path.stem
-        if len(name_) != 14:
-            return f"[WARN] Invalid name length: {name_}"
-
-        slide = openslide.OpenSlide(str(svs_path))
-
         # 1. Magnification
         lvl_img, scale_img, base_mag = pick_level_for_target_mag(slide, target_mag)
 
@@ -116,7 +137,8 @@ def _process_one_slide(
 
                     # === CHECK FOR EMPTY MASK ===
                     if np.count_nonzero(mp) == 0:
-                        # Emits a warning but continues execution
+                        # Log a warning for data quality monitoring
+                        logger.warning(f"Empty mask generated: {out_name} (Layer {lid})")
                         continue
 
                     cv2.imwrite(
@@ -124,12 +146,9 @@ def _process_one_slide(
                         (mp * 255).astype(np.uint8),
                         [cv2.IMWRITE_PNG_COMPRESSION, 1]
                     )
-
+    finally:
+        # Ensures slide file handle is released even if an error crashes the loop
         slide.close()
-        return None
-
-    except Exception as e:
-        return f"[ERROR] {xml_path.stem}: {e}"
 
 
 def patch_multi(
