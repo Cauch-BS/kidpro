@@ -1,0 +1,9 @@
+batch_size: 16
+epochs: 50
+lr: 1e-4
+seed: 42
+
+early_stopping:
+    patience: 5
+    min_delta: 1e-5
+    mode: min

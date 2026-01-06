@@ -1,0 +1,8 @@
+defaults:
+- hydra: default
+- model: unet
+- train: default
+- dataset: glom 
+- runtime: default
+- export: default
+- _self_
