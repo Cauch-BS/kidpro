@@ -1,0 +1,4 @@
+defaults:
+  - /paths: m0m1
+  - /task: m0m1
+  - /data: default
