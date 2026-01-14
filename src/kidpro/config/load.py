@@ -10,8 +10,8 @@ from typing import Any, Dict, Tuple
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from ..config.schema import AppCfg
 from ..utils.seed import seed_everything
+from .schema import AppCfg, ClassificationTaskCfg, SegTaskCfg
 
 
 @dataclass(frozen=True)
@@ -73,20 +73,59 @@ def CONFIG_EXPORT(cfg: AppCfg, rr: RuntimeResolved) -> None:
     )
 
   if cfg.export.save_env_json:
-    env = {
-      "task_type": cfg.dataset.task.type,
-      "layer_ids": cfg.dataset.task.layer_ids,
-      "patch_size": cfg.dataset.data.patch_size,
+    task = cfg.dataset.task
+    data = cfg.dataset.data
+    paths = cfg.dataset.paths
+    model = cfg.model
+
+    env: Dict[str, Any] = {
+      # Task / dataset identity
+      "task_type": task.type,
+      "dataset_root_dir": str(paths.root_dir),
+      "dataset_csv_name": paths.csv_name,
+      "runs_root": str(paths.runs_root),
+
+      # Data / training
+      "patch_size": data.patch_size,
       "batch_size": cfg.train.batch_size,
       "epochs": cfg.train.epochs,
       "lr": cfg.train.lr,
-      "test_ratio": cfg.dataset.data.test_ratio,
-      "val_ratio": cfg.dataset.data.val_ratio,
+      "test_ratio": data.test_ratio,
+      "val_ratio": data.val_ratio,
+      "num_workers": data.num_workers,
+      "pin_memory": data.pin_memory,
+
+      # Runtime
       "device": rr.device,
       "cuda_available": rr.cuda_available,
       "torch_version": torch.__version__,
       "python_version": platform.python_version(),
+
+      # Model (useful for both seg + cls)
+      "model_name": model.name,
+      "model_arch": getattr(model, "arch", None),
+      "model_encoder_name": getattr(model, "encoder_name", None),
+      "model_encoder_weights": getattr(model, "encoder_weights", None),
+      "model_in_channels": model.in_channels,
+      "model_num_classes": getattr(model, "num_classes", None),
+      "model_pretrained": getattr(model, "pretrained", None),
+
+      # Provenance
       **_git_info(),
     }
+
+    # --- Task-specific fields (safe, no assumptions) ---
+    if isinstance(task, SegTaskCfg):
+      env["layer_ids"] = task.layer_ids
+    elif isinstance(task, ClassificationTaskCfg):
+      env["task_num_classes"] = task.num_classes
+      env["positive_label"] = task.positive_label
+    if hasattr(task, "positive_label"):
+      env["positive_label"] = getattr(task, "positive_label")
+
+    # Dataset-specific metadata (e.g., classification label CSV)
+    if getattr(paths, "label_csv", None) is not None:
+      env["label_csv"] = str(paths.label_csv)
+
     with open(run_dir / cfg.export.env_json_name, "w") as f:
       json.dump(env, f, indent=2)

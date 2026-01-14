@@ -21,7 +21,7 @@ def _objective_power(slide: openslide.OpenSlide) -> float | None:
 
 def pick_level_for_target_mag(
   slide: openslide.OpenSlide, target_mag: float, default_base: float = 40.0
-) -> tuple[openslide.OpenSlide, float, float]:
+) -> tuple[int, float, float]:
   """
   Selects the best pyramid level for a specific target magnification.
 
