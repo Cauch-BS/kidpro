@@ -72,6 +72,7 @@ class ModelCfg(BaseModel):
   # - segmentation_models_pytorch Unet ("unet")
   # - timm classifiers ("timm")
   name: Literal["unet", "timm"] = "unet"
+  init_ckpt: Optional[Path]
 
   # Unet-specific
   encoder_name: str = "resnet50"

@@ -51,12 +51,36 @@ def build_model_cls(cfg: AppCfg) -> Module:
   # schema cross-field validation ensures consistency if model.num_classes is set
   num_classes = cfg.model.num_classes or cfg.dataset.task.num_classes
 
-  return timm.create_model(
-    arch,
-    pretrained=cfg.model.pretrained,
-    num_classes=num_classes,
+  model = timm.create_model(
+    cfg.model.arch,
+    pretrained=False,  # IMPORTANT
+    num_classes=cfg.model.num_classes or cfg.dataset.task.num_classes,
     in_chans=cfg.model.in_channels,
   )
+
+  ckpt = getattr(cfg.model, "init_ckpt", None)
+
+  if ckpt:
+    from safetensors.torch import load_file
+    state = load_file(ckpt)
+    head_keys = [
+      "fc.weight",
+      "fc.bias",
+      "classifier.weight",
+      "classifier.bias",
+      "head.weight",
+      "head.bias",
+    ]
+
+    filtered = {
+        k: v for k, v in state.items()
+        if k not in head_keys
+    }
+
+    missing, unexpected = model.load_state_dict(filtered, strict=False)
+    print("[CKPT]", "missing:", missing[:5], "unexpected:", unexpected[:5])
+
+  return model
 
 
 def build_loss_cls(cfg: AppCfg) -> nn.Module:
