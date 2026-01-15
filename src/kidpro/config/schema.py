@@ -292,3 +292,61 @@ class AppCfg(BaseModel):
         raise ValueError("For segmentation tasks, set model.name='unet' (current implementation).")
 
     return self
+
+# -------------------------
+# Patch config (Hydra patch CLI)
+# -------------------------
+class PatchPathsCfg(BaseModel):
+  svs_dir: Path
+  xml_dir: Path
+  out_home: Path
+
+
+class PatchParamsCfg(BaseModel):
+  target_mag: float = 10.0
+  mask_mag: float = 2.5
+  patch_size: int = 512
+  stride: int = 512
+  overlap_th: float = 0.05
+  num_workers: int = 16
+  allowed_mags: list[float] = Field(default_factory=lambda: [2.5, 10.0, 40.0])
+
+  @model_validator(mode="after")
+  def _validate(self) -> "PatchParamsCfg":
+    if self.patch_size <= 0:
+      raise ValueError("patch.params.patch_size must be > 0.")
+    if self.stride <= 0:
+      raise ValueError("patch.params.stride must be > 0.")
+    if self.num_workers <= 0:
+      raise ValueError("patch.params.num_workers must be > 0.")
+    if not (0.0 <= self.overlap_th <= 1.0):
+      raise ValueError("patch.params.overlap_th must be in [0, 1].")
+    if not self.allowed_mags:
+      raise ValueError("patch.params.allowed_mags must be non-empty.")
+    if self.target_mag not in self.allowed_mags:
+      raise ValueError("patch.params.target_mag must be in patch.params.allowed_mags.")
+    if self.mask_mag not in self.allowed_mags:
+      raise ValueError("patch.params.mask_mag must be in patch.params.allowed_mags.")
+    return self
+
+
+class PatchLoggingCfg(BaseModel):
+  level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+  log_file: str = "process.log"
+
+
+class PatchCfg(BaseModel):
+  paths: PatchPathsCfg
+  segmentation_type: str
+  layer_ids: list[int] = Field(default_factory=list)
+  output_map: dict[str, str] = Field(default_factory=dict)
+  params: PatchParamsCfg = Field(default_factory=PatchParamsCfg)
+  logging: PatchLoggingCfg = Field(default_factory=PatchLoggingCfg)
+
+  @model_validator(mode="after")
+  def _validate(self) -> "PatchCfg":
+    if not self.layer_ids:
+      raise ValueError("patch.layer_ids must include at least one layer id.")
+    if self.segmentation_type not in self.output_map:
+      raise ValueError("patch.segmentation_type must exist in patch.output_map.")
+    return self
