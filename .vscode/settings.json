@@ -8,5 +8,10 @@
       "**/.mypy_cache": true,
       "**/.ruff_cache": true,
       "**/*.egg-info": true
-    }
+    },
+    "mypy-type-checker.args": [
+        "--config-file=mypy.ini",
+        "--exclude=src/kidpro/torchscale/**"
+    ],
+    "ruff.exclude": ["src/kidpro/torchscale/**"],
   }

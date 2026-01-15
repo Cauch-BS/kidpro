@@ -25,6 +25,8 @@ repos:
     rev: v0.5.7
     hooks:
     -   id: ruff
+        files: \.py$
+        exclude: ^(scripts/|src/kidpro/torchscale/)
         args: [--config=ruff.toml]
 
   - repo: https://github.com/pre-commit/mirrors-mypy
@@ -32,8 +34,7 @@ repos:
     hooks:
     -   id: mypy
         files: \.py$
-        exclude: ^scripts/
-        additional_dependencies: [types-requests==2.31.0, jaxlib==0.4.31, ml_dtypes==0.3.2, numpy==1.26.3, scipy==1.11.4]
+        exclude: ^(scripts/|src/kidpro/torchscale/)
         args: [--config=mypy.ini]
 
   - repo: https://github.com/kynan/nbstripout
