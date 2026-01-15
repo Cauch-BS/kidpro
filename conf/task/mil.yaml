@@ -1,0 +1,5 @@
+type: mil
+num_classes: 2
+top_k: 10
+max_patches: 128
+sample_mode: random

@@ -1,6 +1,6 @@
 name: timm
 arch: resnet50
-pretrained: true
+pretrained: false
 num_classes: 2
 in_channels: 3
 init_ckpt: /home/khdp-user/workspace/huggingface_cache/timm_resnet50_a1_in1k/model.safetensors

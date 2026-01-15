@@ -57,12 +57,23 @@ class ClassificationTaskCfg(BaseModel):
       raise ValueError("Classification requires num_classes >= 2.")
     return self
 
+class MILTaskCfg(BaseModel):
+    type: Literal["mil"]
+    num_classes: int = 2
+    top_k: int = 10
+    max_patches: int = 300
+    sample_mode: Literal["random", "first"] = "random"
+
+    @model_validator(mode="after")
+    def _validate(self) -> "ClassificationTaskCfg":
+      if self.num_classes <= 1:
+        raise ValueError("Classification requires num_classes >= 2.")
+      return self
 
 TaskCfg = Annotated[
-  Union[SegTaskCfg, ClassificationTaskCfg],
-  Field(discriminator="type"),
+    Union[SegTaskCfg, ClassificationTaskCfg, MILTaskCfg],
+    Field(discriminator="type"),
 ]
-
 
 # -------------------------
 # Model configs
@@ -81,7 +92,7 @@ class ModelCfg(BaseModel):
 
   # timm-specific
   arch: Optional[str] = None          # e.g. "resnet50"
-  pretrained: bool = True
+  pretrained: bool = False
   num_classes: Optional[int] = None   # head dimension (should match task for classification)
 
   # shared
@@ -104,6 +115,7 @@ class ModelCfg(BaseModel):
 # -------------------------
 class DataCfg(BaseModel):
   patch_size: int = 512
+  train_ratio: float = 0.6
   test_ratio: float = 0.2
   val_ratio: float = 0.2
   num_workers: int = 4
@@ -113,10 +125,14 @@ class DataCfg(BaseModel):
   def _validate(self) -> "DataCfg":
     if self.patch_size <= 0:
       raise ValueError("data.patch_size must be > 0.")
+    if not (0.0 < self.train_ratio < 1.0):
+      raise ValueError("data.train_ratio must be in (0,1).")
     if not (0.0 < self.test_ratio < 1.0):
       raise ValueError("data.test_ratio must be in (0, 1).")
     if not (0.0 <= self.val_ratio < 1.0):
       raise ValueError("data.val_ratio must be in [0, 1).")
+    if abs(self.train_ratio + self.test_ratio + self.val_ratio - 1) >= 1e-6:
+      raise ValueError("train, test and validation ratios must sum to 1")
     return self
 
 
@@ -174,7 +190,6 @@ class DatasetCfg(BaseModel):
   task: TaskCfg
   data: DataCfg
 
-
 # -------------------------
 # App config (cross-field validation)
 # -------------------------
@@ -195,13 +210,13 @@ class AppCfg(BaseModel):
     model = self.model
 
     # Classification requirements
-    if isinstance(task, ClassificationTaskCfg):
+    if isinstance(task, ClassificationTaskCfg) or isinstance(task, MILTaskCfg):
       if paths.label_csv is None:
-        raise ValueError("dataset.paths.label_csv is required for classification tasks.")
+        raise ValueError("dataset.paths.label_csv is required for classification or MIL tasks.")
 
       # For classification, ensure we use timm (for now) or at least align head dims
       if model.name != "timm":
-        raise ValueError("For classification tasks, set model.name='timm' (current implementation).")
+        raise ValueError("For classification or MIL tasks, set model.name='timm' (current implementation).")
 
       # If model.num_classes provided, must match task.num_classes
       if model.num_classes is not None and model.num_classes != task.num_classes:
