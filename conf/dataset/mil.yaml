@@ -1,0 +1,5 @@
+# conf/dataset/mil.yaml
+defaults:
+  - /paths: mil
+  - /task: mil
+  - /data: default_mil

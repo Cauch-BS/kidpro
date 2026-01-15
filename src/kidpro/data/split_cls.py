@@ -87,8 +87,8 @@ def build_cls_dataset_csv(cfg: AppCfg) -> pd.DataFrame:
   )
   slide_split = stratified_split_slide(
     slide_df,
-    train_ratio=0.8,
-    val_ratio=0.1,
+    train_ratio= cfg.dataset.data.train_ratio,
+    val_ratio=cfg.dataset.data.val_ratio,
     seed=cfg.train.seed,
   )
 

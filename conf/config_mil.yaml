@@ -1,0 +1,9 @@
+# conf/config_mil.yaml
+defaults:
+  - hydra: default
+  - model: timm
+  - train: default
+  - dataset: mil
+  - runtime: default
+  - export: default
+  - _self_
