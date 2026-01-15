@@ -1,0 +1,12 @@
+{
+    "files.exclude": {
+      "**/.mypy_cache": true,
+      "**/.ruff_cache": true,
+      "**/*.egg-info": true
+    },
+    "search.exclude": {
+      "**/.mypy_cache": true,
+      "**/.ruff_cache": true,
+      "**/*.egg-info": true
+    }
+  }
