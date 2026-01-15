@@ -22,21 +22,17 @@ def rasterize_xml_mask(
   and draws filled polygons.
 
   Args:
-      xml_path (Path): Path to the XML annotation file (e.g., from Aperio ImageScope).
-      slide (openslide.OpenSlide): The source WSI object (used for dimensions).
-      layer_ids (list[int]): List of 'Id' attributes from the XML to process
-      BASE_MAG (float): The native magnification of the WSI (usually 20x or 40x).
-      MASK_BASE_MAG (float): The target magnification for the output mask.
+    xml_path: Path to the XML annotation file (e.g., from Aperio ImageScope).
+    slide: The source WSI object (used for dimensions).
+    layer_ids: List of 'Id' attributes from the XML to process.
+    BASE_MAG: The native magnification of the WSI (usually 20x or 40x).
+    MASK_BASE_MAG: The target magnification for the output mask.
 
   Returns:
-      int: The factor by which the image was downscaled
-
-      dict[int, np.ndarray]: A dictionary mapping layer IDs to binary masks.
-                             Each mask is a numpy array of shape (Hm, Wm).
-
-      np.ndarray: A single union mask (np.ndarray) of shape (Hm, Wm).
-                  This represents the logical OR of all requested layers (1 where
-                  any annotation exists, 0 otherwise).
+    tuple containing:
+      - downsample (int): The factor by which the image was downscaled.
+      - masks (dict[int, np.ndarray]): Dictionary mapping layer IDs to binary masks.
+      - union_mask (np.ndarray): Logical OR of all requested layers.
   """
 
   # 1. Calculate Downsample Factor
@@ -84,10 +80,9 @@ def rasterize_xml_mask(
         cnt = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
 
         # Draw the filled polygon (1 = foreground)
-        # Note: This modifies the array inside the 'masks' dict in-place
         cv2.fillPoly(masks[lid], [cnt], 1)
 
-  # 6. Get Union Mask
+  # 6. Create Union Mask
   for lid in layer_ids:
     union_mask |= masks[lid]
 

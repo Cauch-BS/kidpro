@@ -40,6 +40,8 @@ def main(hcfg: DictConfig) -> None:
     shuffle=True,
     num_workers=cfg.dataset.data.num_workers,
     pin_memory=cfg.dataset.data.pin_memory,
+    persistent_workers=(cfg.dataset.data.num_workers > 0),
+    prefetch_factor=4 if cfg.dataset.data.num_workers > 0 else None,
   )
   dl_va = torch.utils.data.DataLoader(
     ds_va,
@@ -47,6 +49,8 @@ def main(hcfg: DictConfig) -> None:
     shuffle=False,
     num_workers=cfg.dataset.data.num_workers,
     pin_memory=cfg.dataset.data.pin_memory,
+    persistent_workers=(cfg.dataset.data.num_workers > 0),
+    prefetch_factor=4 if cfg.dataset.data.num_workers > 0 else None,
   )
 
   model = build_model_mil(cfg).to(rr.device)
