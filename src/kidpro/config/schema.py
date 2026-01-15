@@ -19,7 +19,7 @@ class PathsCfg(BaseModel):
   runs_root: Path
   csv_name: str = "dataset.csv"
 
-  # Classification-only
+  # MIL-only
   label_csv: Optional[Path] = None
 
 
@@ -42,21 +42,6 @@ class SegTaskCfg(BaseModel):
     return self
 
 
-class ClassificationTaskCfg(BaseModel):
-  type: Literal["classification"]
-  num_classes: int = 2
-
-  # Optional; useful if your labeling logic wants a canonical positive label name.
-  # Your current split_cls.py hard-codes: target == "m1" -> 1 else 0
-  # Keeping this field makes that rule configurable later.
-  positive_label: Optional[str] = "m1"
-
-  @model_validator(mode="after")
-  def _validate(self) -> "ClassificationTaskCfg":
-    if self.num_classes <= 1:
-      raise ValueError("Classification requires num_classes >= 2.")
-    return self
-
 class MILTaskCfg(BaseModel):
     type: Literal["mil"]
     num_classes: int = 2
@@ -71,7 +56,7 @@ class MILTaskCfg(BaseModel):
       return self
 
 TaskCfg = Annotated[
-    Union[SegTaskCfg, ClassificationTaskCfg, MILTaskCfg],
+    Union[SegTaskCfg, MILTaskCfg],
     Field(discriminator="type"),
 ]
 
@@ -121,10 +106,12 @@ class ModelCfg(BaseModel):
   adapter_activation: Literal["relu", "gelu", "tanh"] = "gelu"
   adapter_dropout: float = 0.25
 
-  # Attention head config
-  num_heads: int = 4
-  attn_hidden_dim: int = 128
-  attn_dropout: float = 0.25
+  # LongNet MIL head config
+  longnet_dim: int = 1536
+  longnet_depth: int = 2
+  longnet_slide_ngrids: int = 1000
+  longnet_max_wsi_size: int = 262144
+  longnet_dropout: float = 0.25
   input_size: Optional[int] = 256
 
   @model_validator(mode="after")
@@ -140,14 +127,16 @@ class ModelCfg(BaseModel):
     if self.adapter_dropout < 0 or self.adapter_dropout >= 1:
       raise ValueError("model.adapter_dropout must be in [0, 1).")
 
-    if self.num_heads <= 0:
-      raise ValueError("model.num_heads must be > 0.")
-
-    if self.attn_hidden_dim <= 0:
-      raise ValueError("model.attn_hidden_dim must be > 0.")
-
-    if self.attn_dropout < 0 or self.attn_dropout >= 1:
-      raise ValueError("model.attn_dropout must be in [0, 1).")
+    if self.longnet_dim <= 0:
+      raise ValueError("model.longnet_dim must be > 0.")
+    if self.longnet_depth <= 0:
+      raise ValueError("model.longnet_depth must be > 0.")
+    if self.longnet_slide_ngrids <= 0:
+      raise ValueError("model.longnet_slide_ngrids must be > 0.")
+    if self.longnet_max_wsi_size <= 0:
+      raise ValueError("model.longnet_max_wsi_size must be > 0.")
+    if self.longnet_dropout < 0 or self.longnet_dropout >= 1:
+      raise ValueError("model.longnet_dropout must be in [0, 1).")
 
     return self
 
@@ -251,22 +240,10 @@ class AppCfg(BaseModel):
     paths = self.dataset.paths
     model = self.model
 
-    #Classification requirements
-    if isinstance(task, ClassificationTaskCfg):
-      if paths.label_csv is None:
-        raise ValueError("dataset.paths.label_csv is required for classification or MIL tasks.")
-
-      if model.name != "timm":
-        raise ValueError("For classification tasks, set model.name='timm' (current implementation).")
-
-      # If model.num_classes provided, must match task.num_classes
-      if model.num_classes is not None and model.num_classes != task.num_classes:
-        raise ValueError(
-          f"model.num_classes ({model.num_classes}) must equal dataset.task.num_classes ({task.num_classes})."
-      )
-
-    #MIL Task Requirements
+    # MIL Task Requirements
     if isinstance(task, MILTaskCfg):
+      if paths.label_csv is None:
+        raise ValueError("dataset.paths.label_csv is required for MIL tasks.")
       if model.name not in ("timm", "prov_gigapath", "uni2_h", "virchow2"):
         raise ValueError("For MIL tasks, set model.name in {'timm','prov_gigapath','uni2_h','virchow2'}.")
 

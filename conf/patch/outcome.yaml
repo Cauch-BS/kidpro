@@ -2,6 +2,6 @@ patch:
   segmentation_type: outcome
   layer_ids: [1, 2]
   paths:
-    xml_dir: /home/khdp-user/workspace/dataset/Annotation/Glomerulus
+    xml_dir: /home/khdp-user/workspace/dataset/Annotation
   params:
     overlap_th: 0.3

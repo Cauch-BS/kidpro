@@ -34,6 +34,18 @@ from .early_stop import EarlyStopping
 log = logging.getLogger(__name__)
 
 
+def _unpack_mil_batch(
+  batch: tuple[torch.Tensor, ...],
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, str]:
+  if len(batch) == 3:
+    x, y, slide = batch
+    return x, y, None, str(slide)
+  if len(batch) == 4:
+    x, y, coords, slide = batch
+    return x, y, coords, str(slide)
+  raise ValueError(f"Unexpected MIL batch format with {len(batch)} items.")
+
+
 @torch.no_grad()
 def evaluate_mil(rr: RuntimeResolved, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
   """
@@ -53,18 +65,20 @@ def evaluate_mil(rr: RuntimeResolved, model: nn.Module, loader: DataLoader) -> D
   y_prob: list[float] = []
   y_pred: list[int] = []
 
-  for x, y, _slide in tqdm(loader, desc="Eval", leave=False):
+  for batch in tqdm(loader, desc="Eval", leave=False):
+    x, y, coords, _slide = _unpack_mil_batch(batch)
     x = x.squeeze(0).to(rr.device, non_blocking=True)  # (N,C,H,W)
     y = y.to(rr.device, non_blocking=True)             # (1,)
+    coords_t = coords.squeeze(0).to(rr.device, non_blocking=True) if coords is not None else None
 
     # FIXED: Proper amp context handling
     if use_amp and autocast is not None:
       with autocast(device_type="cuda"):
-        logits = model(x)  # (1,2)
+        logits = model(x, coords_t)  # (1,2)
         prob = torch.softmax(logits, dim=1)[:, 1]
         pred = torch.argmax(logits, dim=1)
     else:
-      logits = model(x)
+      logits = model(x, coords_t)
       prob = torch.softmax(logits, dim=1)[:, 1]
       pred = torch.argmax(logits, dim=1)
 
@@ -139,19 +153,21 @@ def fit_mil(
     train_losses: list[float] = []
     pbar = tqdm(train_loader, desc=f"Train {epoch+1}/{cfg.train.epochs}", leave=False)
 
-    for x, y, _slide in pbar:
+    for batch in pbar:
+      x, y, coords, _slide = _unpack_mil_batch(batch)
       x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)  # (N,C,H,W)
       y = y.to(rr.device, non_blocking=asynchrony)             # (1,)
+      coords_t = coords.squeeze(0).to(rr.device, non_blocking=asynchrony) if coords is not None else None
 
       optimizer.zero_grad(set_to_none=True)
 
       # FIXED: Proper amp handling
       if use_amp and autocast is not None:
         with autocast(device_type="cuda"):
-          logits = model(x)  # (1,2)
+          logits = model(x, coords_t)  # (1,2)
           loss = criterion(logits, y)
       else:
-        logits = model(x)
+        logits = model(x, coords_t)
         loss = criterion(logits, y)
 
       if use_amp and scaler is not None:
@@ -173,16 +189,18 @@ def fit_mil(
     model.eval()
     val_losses: list[float] = []
     with torch.no_grad():
-      for x, y, _slide in tqdm(val_loader, desc="ValLoss", leave=False):
+      for batch in tqdm(val_loader, desc="ValLoss", leave=False):
+        x, y, coords, _slide = _unpack_mil_batch(batch)
         x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)
         y = y.to(rr.device, non_blocking=asynchrony)
+        coords_t = coords.squeeze(0).to(rr.device, non_blocking=asynchrony) if coords is not None else None
 
         if use_amp and autocast is not None:
           with autocast(device_type="cuda"):
-            logits = model(x)
+            logits = model(x, coords_t)
             loss = criterion(logits, y)
         else:
-          logits = model(x)
+          logits = model(x, coords_t)
           loss = criterion(logits, y)
 
         val_losses.append(float(loss.item()))

@@ -11,7 +11,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from ..utils.seed import seed_everything
-from .schema import AppCfg, ClassificationTaskCfg, PatchCfg, SegTaskCfg
+from .schema import AppCfg, MILTaskCfg, PatchCfg, SegTaskCfg
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,7 @@ def CONFIG_EXPORT(cfg: AppCfg, rr: RuntimeResolved) -> None:
       "torch_version": torch.__version__,
       "python_version": platform.python_version(),
 
-      # Model (useful for both seg + cls)
+      # Model (useful for both seg + mil)
       "model_name": model.name,
       "model_arch": getattr(model, "arch", None),
       "model_encoder_name": getattr(model, "encoder_name", None),
@@ -127,11 +127,8 @@ def CONFIG_EXPORT(cfg: AppCfg, rr: RuntimeResolved) -> None:
     # --- Task-specific fields (safe, no assumptions) ---
     if isinstance(task, SegTaskCfg):
       env["layer_ids"] = task.layer_ids
-    elif isinstance(task, ClassificationTaskCfg):
+    elif isinstance(task, MILTaskCfg):
       env["task_num_classes"] = task.num_classes
-      env["positive_label"] = task.positive_label
-    if hasattr(task, "positive_label"):
-      env["positive_label"] = getattr(task, "positive_label")
 
     # Dataset-specific metadata (e.g., classification label CSV)
     if getattr(paths, "label_csv", None) is not None:

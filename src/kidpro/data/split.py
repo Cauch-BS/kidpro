@@ -40,7 +40,7 @@ def build_dataset_csv(cfg: AppCfg) -> pd.DataFrame:
 
     for img_path in img_dir.glob("*.png"):
       valid = False
-      for lid in cfg.dataset.task.layer_ids:
+      for lid in cfg.dataset.task.layer_ids: # type: ignore
         mp = mask_root / f"layer{lid}" / img_path.name
         if mp.exists():
           valid = True

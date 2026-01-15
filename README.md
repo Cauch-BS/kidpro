@@ -32,7 +32,6 @@ Example usage:
 Training configs live under `conf/` and are selected via the module entrypoint:
 
 - Segmentation: `python -m kidpro.train` (uses `conf/config.yaml`)
-- Classification: `python -m kidpro.train_cls` (uses `conf/config_cls.yaml`)
 - MIL: `python -m kidpro.train_mil` (uses `conf/config_mil.yaml`)
 
 Override examples:

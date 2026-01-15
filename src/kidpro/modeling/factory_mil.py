@@ -8,9 +8,7 @@ from .sources import build_foundation, freeze_module
 
 def build_model_mil(cfg: AppCfg) -> Module:
   """
-  Build MIL model with attention mechanism.
-
-  Returns GatedAttentionMIL by default (can be configured).
+  Build MIL model with LongNet head.
   """
   if cfg.dataset.task.type != "mil":
     raise ValueError(
@@ -26,16 +24,20 @@ def build_model_mil(cfg: AppCfg) -> Module:
   # MIL head configuration
   num_classes = getattr(cfg.dataset.task, "num_classes", 2)
 
-  # Import attention models
-  from .attention import MultiHeadFlashAttentionMIL
+  from .longnet import LongNetMIL, LongNetViT
 
-  # Build attention MIL model
-  model = MultiHeadFlashAttentionMIL(
-    backbone=backbone,
-    feat_dim=feat_dim,
-    num_classes=num_classes,
-    num_heads=cfg.model.num_heads,
-    dropout=cfg.model.attn_dropout,
+  tile_encoder = getattr(backbone, "tile_encoder", backbone)
+  dim = cfg.model.longnet_dim
+  slide_encoder = LongNetViT(
+    in_chans=int(getattr(cfg.model, "foundation_dim", feat_dim)),
+    embed_dim=dim,
+    depth=cfg.model.longnet_depth,
+    slide_ngrids=cfg.model.longnet_slide_ngrids,
+    tile_size=cfg.dataset.data.patch_size,
+    max_wsi_size=cfg.model.longnet_max_wsi_size,
+    global_pool=False,
+    dropout=cfg.model.longnet_dropout,
   )
+  model = LongNetMIL(tile_encoder=tile_encoder, slide_encoder=slide_encoder, num_classes=num_classes)
 
   return model

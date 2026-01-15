@@ -10,7 +10,7 @@ from omegaconf import DictConfig
 from .config.load import CONFIG, CONFIG_EXPORT
 from .data.dataset_mil import MILDataset
 from .data.split_mil import build_mil_split_csv
-from .data.transform_cls import get_transforms_cls
+from .data.transform import get_transforms
 from .modeling.factory_mil import build_model_mil
 from .training.loop_mil import fit_mil
 
@@ -29,7 +29,7 @@ def main(hcfg: DictConfig) -> None:
   df_tr = df[df["split"] == "train"].reset_index(drop=True)
   df_va = df[df["split"] == "val"].reset_index(drop=True)
 
-  train_tf, val_tf = get_transforms_cls(cfg)  # reuse; OK for MIL too
+  train_tf, val_tf = get_transforms(cfg)
 
   ds_tr = MILDataset(cfg, df_tr, transform=train_tf)
   ds_va = MILDataset(cfg, df_va, transform=val_tf)

@@ -154,7 +154,10 @@ def patch_multi(
   if not xml_dir.exists():
     raise FileNotFoundError(f"XML directory does not exist: {xml_dir}")
 
-  xml_list = sorted(xml_dir.glob("*.xml"))
+  if segmentation_type == "outcome":
+    xml_list = sorted(xml_dir.rglob("*.xml"))
+  else:
+    xml_list = sorted(xml_dir.glob("*.xml"))
   if not xml_list:
     raise RuntimeError(f"No XML files found in: {xml_dir}")
 

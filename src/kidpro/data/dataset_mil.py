@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -50,7 +51,7 @@ class MILDataset(Dataset):
     self._patch_paths_cache[slide_name] = paths
     return paths
 
-  def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, str]:
+  def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, str]:
     row = self.df.iloc[idx]
     slide_name = str(row["SlideName"])
     gt_val = row["GT"]
@@ -75,6 +76,8 @@ class MILDataset(Dataset):
         patch_paths = list(np.random.choice(patch_paths, self.max_patches, replace=False)) #type: ignore
 
     imgs = []
+    coords = []
+    coord_re = re.compile(r"_X0Y0_(\d{6})_(\d{6})\.png$")
     for p in patch_paths:
       img = cv2.imread(str(p))
       if img is None:
@@ -84,12 +87,17 @@ class MILDataset(Dataset):
       if self.transform:
         img = self.transform(image=img)["image"]
       else:
-        img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+        img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0 # type: ignore
 
       imgs.append(img)
+      match = coord_re.search(p.name)
+      if not match:
+        raise RuntimeError(f"Missing coordinate suffix in patch filename: {p.name}")
+      coords.append([int(match.group(1)), int(match.group(2))])
 
     if len(imgs) == 0:
       raise RuntimeError(f"All patches failed to load for slide: {slide_name}")
 
-    x = torch.stack(imgs, dim=0)  # (N,3,H,W)
-    return x, y, slide_name
+    x = torch.stack([torch.from_numpy(img) for img in imgs], dim=0)  # (N,3,H,W)
+    xy = torch.tensor(coords, dtype=torch.float32)  # (N,2) # type: ignore
+    return x, y, xy, slide_name

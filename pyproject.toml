@@ -27,6 +27,8 @@ dependencies = [
   "torchvision>=0.16",
   "albumentations>=1.3",
   "opencv-python>=4.8",
+  "einops",
+  "fairscale",
   # Segmentation models
   "segmentation-models-pytorch>=0.3.3",
   "timm>=0.9.0",
