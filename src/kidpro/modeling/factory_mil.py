@@ -80,21 +80,21 @@ def build_model_mil(cfg: AppCfg) -> Module:
     _load_backbone_weights(backbone, Path(ckpt))
 
   # Get feature dimension
-  feat_dim = backbone.num_features
+  feat_dim = int(backbone.num_features)  # type: ignore
 
   # MIL head configuration
   num_classes = getattr(cfg.dataset.task, "num_classes", 2)
 
   # Import attention models
-  from .attention import GatedAttentionMIL
+  from .attention import MultiHeadFlashAttentionMIL
 
   # Build attention MIL model
-  model = GatedAttentionMIL(
+  model = MultiHeadFlashAttentionMIL(
     backbone=backbone,
     feat_dim=feat_dim,
     num_classes=num_classes,
-    hidden_dim=128,  # Can be made configurable
-    dropout=0.25,     # Can be made configurable
+    num_heads=4,
+    dropout=0.25,
   )
 
   return model
