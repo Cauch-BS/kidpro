@@ -1,12 +1,25 @@
 from __future__ import annotations
 
-import timm
+from typing import cast
+
 import torch
 import torch.nn as nn
 from torch.nn import Module
 from torch.optim import Optimizer
 
 from ..config.schema import AppCfg
+from .sources import build_foundation, freeze_module
+
+
+class _LinearClassifier(nn.Module):
+  def __init__(self, backbone: nn.Module, feat_dim: int, num_classes: int) -> None:
+    super().__init__()
+    self.backbone = backbone
+    self.classifier = nn.Linear(feat_dim, num_classes)
+
+  def forward(self, x: torch.Tensor) -> torch.Tensor:
+    features = cast(torch.Tensor, self.backbone(x))
+    return self.classifier(features) # type: ignore
 
 
 def build_model_cls(cfg: AppCfg) -> Module:
@@ -27,36 +40,14 @@ def build_model_cls(cfg: AppCfg) -> Module:
   # schema cross-field validation ensures consistency if model.num_classes is set
   num_classes = cfg.model.num_classes or cfg.dataset.task.num_classes
 
-  model = timm.create_model(
-    cfg.model.arch, # type: ignore
-    pretrained=False,  # IMPORTANT
+  foundation = build_foundation(cfg)
+  if cfg.model.freeze_backbone:
+    freeze_module(foundation.backbone)
+  return _LinearClassifier(
+    backbone=foundation.backbone,
+    feat_dim=foundation.feat_dim,
     num_classes=num_classes,
-    in_chans=cfg.model.in_channels,
   )
-
-  ckpt = getattr(cfg.model, "init_ckpt", None)
-
-  if ckpt:
-    from safetensors.torch import load_file
-    state = load_file(ckpt)
-    head_keys = [
-      "fc.weight",
-      "fc.bias",
-      "classifier.weight",
-      "classifier.bias",
-      "head.weight",
-      "head.bias",
-    ]
-
-    filtered = {
-        k: v for k, v in state.items()
-        if k not in head_keys
-    }
-
-    missing, unexpected = model.load_state_dict(filtered, strict=False)
-    print("[CKPT]", "missing:", missing[:5], "unexpected:", unexpected[:5])
-
-  return model
 
 
 def build_loss_cls(cfg: AppCfg) -> nn.Module:

@@ -82,8 +82,7 @@ TaskCfg = Annotated[
 class WeightsCfg(BaseModel):
   # "local" => load from local_path
   # "hf_cache" => load from hf_cache_path (already downloaded / pre-populated)
-  # "remote" => load from external url (does not work in the khdp-user server)
-  source: Literal["local", "hf_cache", "remote"] = "local"
+  source: Literal["local", "hf_cache"] = "local"
   local_path: Optional[Path] = None
   hf_cache_path: Optional[Path] = Path("/home/khdp-user/workspace/huggingface_cache")
 
@@ -102,8 +101,6 @@ class ModelCfg(BaseModel):
   num_classes: Optional[int] = None
 
   # Optional weights (used by timm/prov/uni2_h as appropriate)
-  # Keep init_ckpt for backward compat; prefer weights.* going forward.
-  init_ckpt: Optional[Path] = None
   weights: Optional[WeightsCfg] = None
 
   # Unet-specific
@@ -270,8 +267,8 @@ class AppCfg(BaseModel):
 
     #MIL Task Requirements
     if isinstance(task, MILTaskCfg):
-      if model.name not in ("timm", "prov_gigapath", "uni2_h"):
-        raise ValueError("For MIL tasks, set model.name in {'timm','prov_gigapath','uni2_h'}.")
+      if model.name not in ("timm", "prov_gigapath", "uni2_h", "virchow2"):
+        raise ValueError("For MIL tasks, set model.name in {'timm','prov_gigapath','uni2_h','virchow2'}.")
 
       # If model.num_classes provided, must match task.num_classes
       if model.num_classes is not None and model.num_classes != task.num_classes:
