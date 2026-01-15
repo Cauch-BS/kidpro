@@ -20,7 +20,7 @@ try:
   HAS_AMP = True
 except ImportError:
   try:
-    from torch.cuda.amp import GradScaler, autocast
+    from torch.cuda.amp import GradScaler, autocast  # type: ignore
     HAS_AMP = True
   except ImportError:
     HAS_AMP = False

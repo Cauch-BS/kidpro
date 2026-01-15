@@ -1,0 +1,27 @@
+defaults:
+  - hydra: patch
+  - _self_
+
+patch:
+  paths:
+    svs_dir: /home/khdp-user/workspace/dataset/Slide
+    xml_dir: /home/khdp-user/workspace/dataset/Annotation/Glomerulus
+    out_home: /home/khdp-user/workspace/output
+  segmentation_type: glomerulus
+  layer_ids: [2]
+  output_map:
+    glomerulus: Glom_patch
+    ifta: IFTA_patch
+    inflammation: Infla_patch
+    outcome: MIL_patch
+  params:
+    target_mag: 10.0
+    mask_mag: 2.5
+    patch_size: 512
+    stride: 512
+    overlap_th: 0.05
+    num_workers: 16
+    allowed_mags: [2.5, 10.0, 40.0]
+  logging:
+    level: INFO
+    log_file: process.log

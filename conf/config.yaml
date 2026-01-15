@@ -3,6 +3,5 @@ defaults:
 - model: unet
 - train: default
 - dataset: glom 
-- runtime: default
-- export: default
+- core: default
 - _self_

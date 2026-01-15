@@ -1,4 +1,0 @@
-root_dir: /home/khdp-user/workspace/dataset/Glom_M0M1
-runs_root: /home/khdp-user/workspace/output/m0m1_run_cls
-csv_name: dataset.csv
-label_csv: /home/khdp-user/workspace/dataset/CSV/m0m1_label.csv

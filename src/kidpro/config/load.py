@@ -11,7 +11,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from ..utils.seed import seed_everything
-from .schema import AppCfg, ClassificationTaskCfg, SegTaskCfg
+from .schema import AppCfg, ClassificationTaskCfg, PatchCfg, SegTaskCfg
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,7 @@ def CONFIG(hcfg: DictConfig, run_dir: Path) -> Tuple[AppCfg, RuntimeResolved]:
   cfg_dict = OmegaConf.to_container(hcfg, resolve=True)
 
   # Inject run_dir (Hydra CWD)
-  cfg_dict["run_dir"] = str(run_dir)
+  cfg_dict["run_dir"] = str(run_dir) # type: ignore
 
   cfg = AppCfg.model_validate(cfg_dict)
   rr = resolve_device(cfg.runtime.device)
@@ -45,6 +45,16 @@ def CONFIG(hcfg: DictConfig, run_dir: Path) -> Tuple[AppCfg, RuntimeResolved]:
 
   seed_everything(cfg.train.seed, cuda=rr.cuda_available)
   return cfg, rr
+
+
+def PATCH_CONFIG(hcfg: DictConfig) -> PatchCfg:
+  cfg_dict = OmegaConf.to_container(hcfg, resolve=True)
+  if not isinstance(cfg_dict, dict) or "patch" not in cfg_dict:
+    raise ValueError("Patch config must contain a top-level 'patch' key.")
+  patch_cfg = cfg_dict["patch"]
+  if not isinstance(patch_cfg, dict):
+    raise ValueError("Patch config must be a mapping under the 'patch' key.")
+  return PatchCfg.model_validate(patch_cfg) # type: ignore
 
 
 def _git_info() -> Dict[str, Any]:

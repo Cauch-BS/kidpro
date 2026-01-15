@@ -1,0 +1,29 @@
+name: uni2_h
+arch: uni2_h
+
+# --- MIL attention head knobs ---
+num_heads: 4
+attn_hidden_dim: 128
+attn_dropout: 0.25
+
+num_classes: 2
+in_channels: 3
+pretrained: false
+
+# --- Weights loading (network-robust) ---
+# source: local | hf_cache
+weights:
+  source: local
+  local_path: /home/khdp-user/workspace/huggingface_cache/uni2_h/model.pt
+  hf_cache_path: /home/khdp-user/workspace/huggingface_cache/
+
+freeze_backbone: true
+
+# --- Adapter (foundation_dim -> mil_dim) ---
+foundation_dim: 1024
+mil_dim: 512
+adapter_activation: gelu # relu | gelu | tanh
+adapter_dropout: 0.25
+
+# --- Input expectations (used by transforms via data.patch_size today) ---
+input_size: 224

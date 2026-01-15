@@ -1,0 +1,5 @@
+patch:
+  segmentation_type: inflammation
+  layer_ids: [1]
+  paths:
+    xml_dir: /home/khdp-user/workspace/dataset/Annotation/Inflammation

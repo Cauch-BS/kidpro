@@ -3,21 +3,15 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
-class GatedAttentionMIL(nn.Module):
+class MultiHeadFlashAttentionMIL(nn.Module):
   """
-  Gated Attention MIL (Ilse et al. 2018)
+  Multi-head attention pooling using scaled_dot_product_attention (FlashAttention).
 
-  Architecture:
-    1. Feature extraction (backbone) -> embeddings (N, D)
-    2. Attention mechanism -> attention weights (N,)
-    3. Weighted aggregation -> bag representation (D,)
-    4. Classification head -> logits (num_classes,)
-
-  This model supports:
-    - Interpretability: exports attention weights per patch
-    - End-to-end training: backbone can be frozen or fine-tuned
+  Uses a learned query per head to attend over instance features and aggregates
+  into a single bag representation.
   """
 
   def __init__(
@@ -25,155 +19,97 @@ class GatedAttentionMIL(nn.Module):
     backbone: nn.Module,
     feat_dim: int,
     num_classes: int = 2,
-    hidden_dim: int = 128,
+    num_heads: int = 4,
+    head_dim: int | None = None,
     dropout: float = 0.25,
   ):
-    """
-    Args:
-      backbone: Feature extractor (timm model with num_classes=0)
-      feat_dim: Dimension of backbone features (e.g., 2048 for ResNet50)
-      num_classes: Number of output classes
-      hidden_dim: Hidden dimension for attention network
-      dropout: Dropout rate
-    """
     super().__init__()
+
+    if num_heads <= 0:
+      raise ValueError("num_heads must be > 0.")
+    if head_dim is None:
+      if feat_dim % num_heads != 0:
+        raise ValueError("feat_dim must be divisible by num_heads when head_dim is None.")
+      head_dim = feat_dim // num_heads
+    if head_dim <= 0:
+      raise ValueError("head_dim must be > 0.")
 
     self.backbone = backbone
     self.feat_dim = feat_dim
     self.num_classes = num_classes
+    self.num_heads = num_heads
+    self.head_dim = head_dim
 
-    # Gated attention mechanism
-    # V: value network (what information to extract)
-    self.attention_V = nn.Sequential(
-      nn.Linear(feat_dim, hidden_dim),
-      nn.Tanh()
-    )
+    self.key_proj = nn.Linear(feat_dim, num_heads * head_dim)
+    self.value_proj = nn.Linear(feat_dim, num_heads * head_dim)
+    self.query = nn.Parameter(torch.randn(num_heads, head_dim))
+    self.out_proj = nn.Linear(num_heads * head_dim, feat_dim)
 
-    # U: gate network (what to pay attention to)
-    self.attention_U = nn.Sequential(
-      nn.Linear(feat_dim, hidden_dim),
-      nn.Sigmoid()
-    )
-
-    # w: attention weights projection
-    self.attention_w = nn.Linear(hidden_dim, 1)
-
-    # Classifier head
     self.classifier = nn.Sequential(
       nn.Linear(feat_dim, num_classes)
     )
 
     self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
+  def _compute_attention(
+    self,
+    keys: torch.Tensor,
+    values: torch.Tensor,
+    return_attention: bool,
+  ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """
+    Args:
+      keys: (N, H, D)
+      values: (N, H, D)
+    """
+    keys = keys.transpose(0, 1)  # (H, N, D)
+    values = values.transpose(0, 1)  # (H, N, D)
+    queries = self.query.unsqueeze(1)  # (H, 1, D)
+
+    if return_attention:
+      scale = float(self.head_dim) ** -0.5
+      scores = torch.matmul(queries, keys.transpose(-2, -1)) * scale  # (H, 1, N)
+      attn = torch.softmax(scores, dim=-1)  # (H, 1, N)
+      attended = torch.matmul(attn, values)  # (H, 1, D)
+      attn_weights = attn.squeeze(1).mean(dim=0)  # (N,)
+      return attended, attn_weights
+
+    # FlashAttention path
+    q = queries.unsqueeze(0)  # (1, H, 1, D)
+    k = keys.unsqueeze(0)     # (1, H, N, D)
+    v = values.unsqueeze(0)   # (1, H, N, D)
+    attended = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0, is_causal=False)
+    attended = attended.squeeze(0)  # (H, 1, D)
+    return attended, None
+
   def forward(
     self,
     x: torch.Tensor,
     return_attention: bool = False
   ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-    """
-    Forward pass.
-
-    Args:
-      x: Input tensor, shape (N, C, H, W) for images or (N, D) for features
-      return_attention: If True, also return attention weights
-
-    Returns:
-      If return_attention=False:
-        logits: (1, num_classes) - slide-level predictions
-      If return_attention=True:
-        (logits, attention_weights):
-          - logits: (1, num_classes)
-          - attention_weights: (N,) - normalized attention per patch
-    """
     # Extract features if input is images
     if x.dim() == 4:  # (N, C, H, W)
       H = self.backbone(x)  # (N, feat_dim)
     else:  # Already features (N, feat_dim)
       H = x
 
-    # Apply dropout to features
     H = self.dropout(H)  # (N, feat_dim)
+    n_instances = H.size(0)
 
-    # Gated attention
-    A_V = self.attention_V(H)  # (N, hidden_dim)
-    A_U = self.attention_U(H)  # (N, hidden_dim)
-    A = self.attention_w(A_V * A_U)  # (N, 1) - element-wise gate
+    keys = self.key_proj(H).view(n_instances, self.num_heads, self.head_dim)
+    values = self.value_proj(H).view(n_instances, self.num_heads, self.head_dim)
 
-    # Softmax over instances to get attention weights
-    A = torch.softmax(A, dim=0)  # (N, 1)
-    attention_weights = A.squeeze(1)  # (N,)
-
-    # Weighted sum of features
-    M = torch.sum(A * H, dim=0, keepdim=True)  # (1, feat_dim)
-
-    # Classification
-    logits = self.classifier(M)  # (1, num_classes)
-
-    if return_attention:
-      return logits, attention_weights
-    return logits
-
-
-class AttentionMIL(nn.Module):
-  """
-  Simple (non-gated) Attention MIL.
-
-  Simpler variant without gating mechanism.
-  Generally performs slightly worse than gated version.
-  """
-
-  def __init__(
-    self,
-    backbone: nn.Module,
-    feat_dim: int,
-    num_classes: int = 2,
-    hidden_dim: int = 128,
-    dropout: float = 0.25,
-  ):
-    super().__init__()
-
-    self.backbone = backbone
-    self.feat_dim = feat_dim
-    self.num_classes = num_classes
-
-    # Simple attention
-    self.attention = nn.Sequential(
-      nn.Linear(feat_dim, hidden_dim),
-      nn.Tanh(),
-      nn.Linear(hidden_dim, 1)
+    attended, attn_weights = self._compute_attention(
+      keys,
+      values,
+      return_attention=return_attention,
     )
 
-    self.classifier = nn.Sequential(
-      nn.Linear(feat_dim, num_classes)
-    )
+    pooled = attended.transpose(0, 1).contiguous().view(1, -1)  # (1, H*D)
+    pooled = self.out_proj(pooled)  # (1, feat_dim)
 
-    self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-
-  def forward(
-    self,
-    x: torch.Tensor,
-    return_attention: bool = False
-  ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-    """Forward pass (same interface as GatedAttentionMIL)."""
-    # Extract features if input is images
-    if x.dim() == 4:  # (N, C, H, W)
-      H = self.backbone(x)  # (N, feat_dim)
-    else:  # Already features
-      H = x
-
-    H = self.dropout(H)
-
-    # Attention weights
-    A = self.attention(H)  # (N, 1)
-    A = torch.softmax(A, dim=0)
-    attention_weights = A.squeeze(1)  # (N,)
-
-    # Weighted aggregation
-    M = torch.sum(A * H, dim=0, keepdim=True)  # (1, feat_dim)
-
-    # Classification
-    logits = self.classifier(M)  # (1, num_classes)
+    logits = self.classifier(pooled)
 
     if return_attention:
-      return logits, attention_weights
-    return logits
+      return logits, attn_weights if attn_weights is not None else torch.empty(0)
+    return logits  # type: ignore

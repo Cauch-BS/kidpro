@@ -2,20 +2,45 @@
 
 Project Status: Planning
 Domain: Medical AI
-Python Version: 
+Python Version: 3.10
 
-> **Path Kids**는 신장 병리(Renal Pathology) 진단을 보조하고 자동화하기 위한 딥러닝 프로젝트입니다.
-> 
+> **Path Kids** is a deep learning project to assist and automate renal pathology (Whole Slide Image, WSI) analysis.
+
 ---
 
-## 🎯 Project Goal (목표)
+## 🎯 Project Goal
 
-이 프로젝트는 신장 조직 검사 이미지(Whole Slide Image, WSI)를 분석하여 다음과 같은 문제를 해결하는 것을 목표로 합니다:
+This project aims to analyze renal biopsy images and solve:
 
-- **문제 정의:** (예: 병리 전문의 부족으로 인한 진단 지연, 미세한 병변의 육안 식별 어려움 등)
-- **해결 방안:** (예: CNN 기반의 사구체(Glomerulus) 자동 분할 및 분류 모델 개발)
-- **기대 효과:** (예: 진단 소요 시간 30% 단축, 진단 일치도 향상)
+- **Problem definition:** (e.g., delayed diagnosis due to limited pathology experts, difficulty spotting subtle lesions)
+- **Approach:** (e.g., CNN-based glomerulus segmentation and classification models)
+- **Expected impact:** (e.g., 30% reduction in diagnosis time, higher agreement rates)
 
-## 🏗️ Architecture (예상 아키텍처)
+## Patch CLI (Hydra)
 
-현재 기획 중인 AI 파이프라인의 구조입니다.
+Hydra configs for patching live under `conf/patch`.
+
+Example usage:
+
+- Default run: `python -m kidpro.patch`
+- Preset run: `python -m kidpro.patch --config-name patch/ifta`
+- Override paths: `python -m kidpro.patch patch.paths.svs_dir=/data/Slide patch.paths.xml_dir=/data/Annotation/Glomerulus`
+- Override params: `python -m kidpro.patch patch.params.overlap_th=0.3 patch.params.num_workers=8`
+
+## Training (Hydra)
+
+Training configs live under `conf/` and are selected via the module entrypoint:
+
+- Segmentation: `python -m kidpro.train` (uses `conf/config.yaml`)
+- Classification: `python -m kidpro.train_cls` (uses `conf/config_cls.yaml`)
+- MIL: `python -m kidpro.train_mil` (uses `conf/config_mil.yaml`)
+
+Override examples:
+
+- Change dataset preset: `python -m kidpro.train dataset=ifta`
+- Swap model: `python -m kidpro.train model=unet train=default`
+- Adjust training params: `python -m kidpro.train train.batch_size=8 train.lr=1e-4`
+
+## 🏗️ Architecture
+
+Planned AI pipeline overview (to be filled in).

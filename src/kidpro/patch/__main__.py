@@ -4,38 +4,23 @@ from functools import partial
 from pathlib import Path
 
 import cv2
+import hydra
 import numpy as np
 import openslide
+from omegaconf import DictConfig
 from tqdm import tqdm
 
 # Ensure these are available
+from ..config.load import PATCH_CONFIG
 from .magnification import pick_level_for_target_mag
 from .rasterize import rasterize_xml_mask
-
-SVS_DIR = Path("/home/khdp-user/workspace/dataset/Slide")
-XML_DIR = Path("/home/khdp-user/workspace/dataset/Annotation/Glomerulus")
-OUT_HOME = Path("/home/khdp-user/workspace/output")
-OUT_PARS = {
-  "glomerulus": "Glom_patch",
-  "ifta": "IFTA_patch",
-  "inflammation": "Infla_patch",
-  "outcome": "MIL_patch",
-}
-
-ALLOWED_MAGS = {2.5, 10.0, 40.0}
-
-logging.basicConfig(
-  filename="process.log",
-  filemode="a",
-  level=logging.INFO,
-  format="%(asctime)s - %(levelname)s - %(message)s",
-)
 
 logger = logging.getLogger(__name__)
 
 
 def _process_one_slide(
   xml_path: Path,
+  svs_dir: Path,
   out_dir: Path,
   layer_ids: list[int],
   target_mag: float,
@@ -51,7 +36,7 @@ def _process_one_slide(
   # Note: No broad try/except block here. We let unexpected errors propagate
   # so the scheduler/caller can handle the traceback.
 
-  svs_path = SVS_DIR / f"{xml_path.stem}.svs"
+  svs_path = svs_dir / f"{xml_path.stem}.svs"
 
   # --- Check 1: File Existence ---
   if not svs_path.exists():
@@ -154,29 +139,38 @@ def _process_one_slide(
 def patch_multi(
   segmentation_type: str,
   layer_ids: list[int],
+  svs_dir: Path,
+  xml_dir: Path,
+  out_home: Path,
+  output_map: dict[str, str],
   target_mag: float = 10.0,
   mask_mag: float = 2.5,
   patch_size: int = 512,
   stride: int = 512,
   overlap_th: float = 0.05,
   num_workers: int = 16,
+  allowed_mags: list[float] | None = None,
 ) -> None:
+  if not xml_dir.exists():
+    raise FileNotFoundError(f"XML directory does not exist: {xml_dir}")
 
-  xml_list = sorted(XML_DIR.glob("*.xml"))
+  xml_list = sorted(xml_dir.glob("*.xml"))
   if not xml_list:
-    raise RuntimeError("No XML files found.")
+    raise RuntimeError(f"No XML files found in: {xml_dir}")
 
-  if segmentation_type not in OUT_PARS:
-    raise KeyError(f"Invalid type. Choose from: {list(OUT_PARS.keys())}")
+  if segmentation_type not in output_map:
+    raise KeyError(f"Invalid type. Choose from: {list(output_map.keys())}")
 
-  out_dir = OUT_HOME / OUT_PARS[segmentation_type]
+  out_dir = out_home / output_map[segmentation_type]
   out_dir.mkdir(parents=True, exist_ok=True)
 
-  if target_mag not in ALLOWED_MAGS or mask_mag not in ALLOWED_MAGS:
-    raise ValueError(f"Invalid magnification. Allowed: {ALLOWED_MAGS}")
+  allowed = set(allowed_mags) if allowed_mags else {2.5, 10.0, 40.0}
+  if target_mag not in allowed or mask_mag not in allowed:
+    raise ValueError(f"Invalid magnification. Allowed: {allowed}")
 
   worker_func = partial(
     _process_one_slide,
+    svs_dir=svs_dir,
     out_dir=out_dir,
     layer_ids=layer_ids,
     target_mag=target_mag,
@@ -186,8 +180,10 @@ def patch_multi(
     overlap_th=overlap_th,
   )
 
-  print(
-    f"Starting multiprocessing with {num_workers} workers for {len(xml_list)} slides..."
+  logger.info(
+    "Starting multiprocessing with %s workers for %s slides.",
+    num_workers,
+    len(xml_list),
   )
 
   with multiprocessing.Pool(num_workers) as pool:
@@ -201,44 +197,46 @@ def patch_multi(
 
   for res in results:
     if res:
-      print(res)
+      logger.info("Worker message: %s", res)
 
-  print(f"[DONE] Processing complete for {segmentation_type}.")
+  logger.info("Processing complete for %s.", segmentation_type)
+
+
+def _configure_logging(log_path: Path, level: str) -> None:
+  log_path.parent.mkdir(parents=True, exist_ok=True)
+  logging.basicConfig(
+    filename=str(log_path),
+    filemode="a",
+    level=getattr(logging, level.upper(), logging.INFO),
+    format="%(asctime)s - %(levelname)s - %(message)s",
+  )
+
+
+@hydra.main(version_base=None, config_path="../../conf", config_name="patch/default")
+def main(hcfg: DictConfig) -> None:
+  cfg = PATCH_CONFIG(hcfg)
+
+  log_path = Path(cfg.logging.log_file)
+  if not log_path.is_absolute():
+    log_path = Path.cwd() / log_path
+  _configure_logging(log_path, cfg.logging.level)
+
+  patch_multi(
+    segmentation_type=cfg.segmentation_type,
+    layer_ids=cfg.layer_ids,
+    svs_dir=cfg.paths.svs_dir,
+    xml_dir=cfg.paths.xml_dir,
+    out_home=cfg.paths.out_home,
+    output_map=cfg.output_map,
+    target_mag=cfg.params.target_mag,
+    mask_mag=cfg.params.mask_mag,
+    patch_size=cfg.params.patch_size,
+    stride=cfg.params.stride,
+    overlap_th=cfg.params.overlap_th,
+    num_workers=cfg.params.num_workers,
+    allowed_mags=cfg.params.allowed_mags,
+  )
 
 
 if __name__ == "__main__":
-  patch_multi("glomerulus", [2])
-  # =========================
-  # CONFIG
-  #   Glom segmentation (dataset/Annotation/Glmerulus)
-  #     Id == 1 -> Core ROI
-  #     Id == 2 -> Glomerulus
-  # =========================
-
-  patch_multi("ifta", [1, 2, 3])
-  # =========================
-  # CONFIG
-  #   segmentation annotation info
-  #   IFTA & Excluded ROI (dataset/Annotation/IFTA_Exception)
-  #     Id == 1 -> IFTA
-  #     Id == 2 -> Medulla (Excluded ROI)
-  #     Id == 3 -> Extrarenal tissue & capsule (Excluded ROI)
-  #     Id == 4 -> Core ROI
-  #     Id == 5 -> IFTA control
-  # =========================
-
-  patch_multi("inflammation", [1])
-  # =========================
-  # CONFIG
-  #   Inflammation (dataset/Annotation/Inflammation)
-  #     Id == 1 -> Inflammation
-  #     Id == 2 -> Inflammation control
-  # =========================
-
-  patch_multi("outcome", [1, 2], overlap_th=0.3)
-  # =========================
-  # CONFIG
-  #   Glom segmentation (dataset/Annotation/Glmerulus)
-  #     Id == 1 -> Core ROI
-  #     Id == 2 -> Glomerulus
-  # =========================
+  main()

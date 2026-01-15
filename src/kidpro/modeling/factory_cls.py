@@ -1,4 +1,3 @@
-# src/kidpro/modeling/factory_cls.py
 from __future__ import annotations
 
 import timm
@@ -9,29 +8,6 @@ from torch.optim import Optimizer
 
 from ..config.schema import AppCfg
 
-
-def _resolve_num_classes(cfg: AppCfg) -> int:
-  """
-  Single source-of-truth resolution for classification head size.
-
-  Priority:
-    1) cfg.model.num_classes if explicitly set (> 1)
-    2) cfg.dataset.task.num_classes if present (> 1)
-  """
-  # Model config first (most explicit for modeling)
-  mc = getattr(cfg.model, "num_classes", None)
-  if isinstance(mc, int) and mc > 1:
-    return mc
-
-  # Fall back to task config (classification-specific)
-  tc = getattr(cfg.dataset.task, "num_classes", None)
-  if isinstance(tc, int) and tc > 1:
-    return tc
-
-  raise ValueError(
-    "Classification requires num_classes > 1. "
-    "Set model.num_classes (preferred) or dataset.task.num_classes."
-  )
 
 def build_model_cls(cfg: AppCfg) -> Module:
   if cfg.dataset.task.type != "classification":
@@ -52,9 +28,9 @@ def build_model_cls(cfg: AppCfg) -> Module:
   num_classes = cfg.model.num_classes or cfg.dataset.task.num_classes
 
   model = timm.create_model(
-    cfg.model.arch,
+    cfg.model.arch, # type: ignore
     pretrained=False,  # IMPORTANT
-    num_classes=cfg.model.num_classes or cfg.dataset.task.num_classes,
+    num_classes=num_classes,
     in_chans=cfg.model.in_channels,
   )
 

@@ -3,6 +3,5 @@ defaults:
   - model: timm
   - train: default
   - dataset: m0m1
-  - runtime: default
-  - export: default
+  - core: default
   - _self_

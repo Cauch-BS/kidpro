@@ -1,6 +1,0 @@
-patch_size: 512
-train_ratio: 0.6
-test_ratio: 0.2
-val_ratio: 0.2
-num_workers: 4
-pin_memory: true
