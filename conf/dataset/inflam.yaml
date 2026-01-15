@@ -1,4 +1,16 @@
-defaults:
-  - /paths: inflam
-  - /task: inflam
-  - /data: default
+paths:
+  root_dir: /home/khdp-user/workspace/output/Infla_patch
+  runs_root: /home/khdp-user/workspace/output/Infla_runs
+  csv_name: dataset.csv
+
+task:
+  type: binary
+  layer_ids: [1]
+
+data:
+  patch_size: 512
+  train_ratio: 0.6
+  test_ratio: 0.2
+  val_ratio: 0.2
+  num_workers: 4
+  pin_memory: true

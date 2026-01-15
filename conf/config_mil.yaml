@@ -4,6 +4,5 @@ defaults:
   - model: timm
   - train: default_mil
   - dataset: mil
-  - runtime: default
-  - export: default
+  - core: default
   - _self_

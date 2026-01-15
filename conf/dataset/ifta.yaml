@@ -1,4 +1,16 @@
-defaults:
-  - /paths: ifta
-  - /task: ifta
-  - /data: default
+paths:
+  root_dir: /home/khdp-user/workspace/output/IFTA_patch
+  runs_root: /home/khdp-user/workspace/output/IFTA_runs
+  csv_name: dataset.csv
+
+task:
+  type: categorical
+  layer_ids: [2, 3, 4]
+
+data:
+  patch_size: 512
+  train_ratio: 0.6
+  test_ratio: 0.2
+  val_ratio: 0.2
+  num_workers: 4
+  pin_memory: true

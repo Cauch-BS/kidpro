@@ -1,5 +1,21 @@
 # conf/dataset/mil.yaml
-defaults:
-  - /paths: mil
-  - /task: mil
-  - /data: default_mil
+paths:
+  root_dir: /home/khdp-user/workspace/output/MIL_patch
+  runs_root: /home/khdp-user/workspace/output/MIL_run_cls
+  csv_name: dataset.csv
+  label_csv: /home/khdp-user/workspace/dataset/CSV/GT_label.csv
+
+task:
+  type: mil
+  num_classes: 2
+  top_k: 10
+  max_patches: 128
+  sample_mode: random
+
+data:
+  patch_size: 256
+  train_ratio: 0.8
+  test_ratio: 0.1
+  val_ratio: 0.1
+  num_workers: 16
+  pin_memory: true

@@ -1,3 +1,0 @@
-device: auto          # auto | cpu | cuda
-cudnn_benchmark: true
-cudnn_deterministic: false
