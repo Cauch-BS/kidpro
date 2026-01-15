@@ -1,7 +1,0 @@
-defaults:
-  - hydra: default
-  - model: timm
-  - train: default
-  - dataset: m0m1
-  - core: default
-  - _self_
