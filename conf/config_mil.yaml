@@ -2,7 +2,7 @@
 defaults:
   - hydra: default
   - model: timm
-  - train: default
+  - train: default_mil
   - dataset: mil
   - runtime: default
   - export: default
