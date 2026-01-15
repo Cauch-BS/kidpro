@@ -14,7 +14,6 @@ from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-# FIXED: Graceful fallback for torch.amp (PyTorch >= 1.9)
 try:
   from torch.amp import GradScaler, autocast
   HAS_AMP = True
@@ -36,16 +35,7 @@ log = logging.getLogger(__name__)
 
 @torch.no_grad()
 def evaluate_mil(rr: RuntimeResolved, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
-  """
-  Evaluate MIL model on a validation/test set.
-
-  Returns:
-    Dictionary containing:
-      - "acc": float (accuracy)
-      - "macro_f1": float (macro F1 score)
-      - "auc": Optional[float] (ROC AUC, None if only one class present)
-      - "cm": np.ndarray of shape (2,2) (confusion matrix)
-  """
+  """Evaluate MIL model."""
   model.eval()
   use_amp = (rr.device == "cuda" and HAS_AMP)
 
@@ -54,13 +44,12 @@ def evaluate_mil(rr: RuntimeResolved, model: nn.Module, loader: DataLoader) -> D
   y_pred: list[int] = []
 
   for x, y, _slide in tqdm(loader, desc="Eval", leave=False):
-    x = x.squeeze(0).to(rr.device, non_blocking=True)  # (N,C,H,W)
-    y = y.to(rr.device, non_blocking=True)             # (1,)
+    x = x.squeeze(0).to(rr.device, non_blocking=True)
+    y = y.to(rr.device, non_blocking=True)
 
-    # FIXED: Proper amp context handling
     if use_amp and autocast is not None:
       with autocast(device_type="cuda"):
-        logits = model(x)  # (1,2)
+        logits = model(x)
         prob = torch.softmax(logits, dim=1)[:, 1]
         pred = torch.argmax(logits, dim=1)
     else:
@@ -72,9 +61,8 @@ def evaluate_mil(rr: RuntimeResolved, model: nn.Module, loader: DataLoader) -> D
     y_prob.append(float(prob.item()))
     y_pred.append(int(pred.item()))
 
-  # FIXED: Handle empty validation set
   if not y_true:
-    log.warning("[WARN] Empty validation set in evaluate_mil")
+    log.warning("[WARN] Empty validation set")
     return {"acc": 0.0, "macro_f1": 0.0, "auc": None, "cm": np.zeros((2, 2), dtype=int)}
 
   acc = accuracy_score(y_true, y_pred)
@@ -97,29 +85,13 @@ def fit_mil(
   criterion: nn.Module,
   optimizer: optim.Optimizer,
 ) -> Path:
-  """
-  Train MIL model with early stopping on val_loss and checkpointing on val_auc.
-
-  Args:
-    cfg: Application configuration
-    rr: Runtime resolution (device, etc.)
-    model: MIL model to train
-    train_loader: Training data loader
-    val_loader: Validation data loader
-    criterion: Loss function
-    optimizer: Optimizer
-
-  Returns:
-    Path to best model checkpoint
-  """
+  """Train MIL model with attention."""
   run_dir = Path(cfg.run_dir) if cfg.run_dir else Path.cwd()
   best_path = run_dir / cfg.export.best_weights_name
 
-  # FIXED: Proper amp handling
   use_amp = (rr.device == "cuda" and HAS_AMP)
   scaler = GradScaler(device="cuda", enabled=use_amp) if use_amp and GradScaler is not None else None
 
-  # Early stopping on loss (minimize)
   stopper_loss = EarlyStopping(
     patience=cfg.train.early_stopping.patience,
     min_delta=cfg.train.early_stopping.min_delta,
@@ -127,28 +99,25 @@ def fit_mil(
   )
 
   best_val_auc: float = -math.inf
-  best_epoch: int = -1  # 1-based when reported
+  best_epoch: int = -1
 
   asynchrony: bool = cfg.dataset.data.pin_memory
 
   for epoch in range(cfg.train.epochs):
-    # -------------------------
     # Train
-    # -------------------------
     model.train()
     train_losses: list[float] = []
     pbar = tqdm(train_loader, desc=f"Train {epoch+1}/{cfg.train.epochs}", leave=False)
 
     for x, y, _slide in pbar:
-      x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)  # (N,C,H,W)
-      y = y.to(rr.device, non_blocking=asynchrony)             # (1,)
+      x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)
+      y = y.to(rr.device, non_blocking=asynchrony)
 
       optimizer.zero_grad(set_to_none=True)
 
-      # FIXED: Proper amp handling
       if use_amp and autocast is not None:
         with autocast(device_type="cuda"):
-          logits = model(x)  # (1,2)
+          logits = model(x)
           loss = criterion(logits, y)
       else:
         logits = model(x)
@@ -167,9 +136,7 @@ def fit_mil(
 
     train_loss = float(np.mean(train_losses)) if train_losses else 0.0
 
-    # -------------------------
     # Val loss
-    # -------------------------
     model.eval()
     val_losses: list[float] = []
     with torch.no_grad():
@@ -189,26 +156,20 @@ def fit_mil(
 
     val_loss = float(np.mean(val_losses)) if val_losses else 0.0
 
-    # -------------------------
     # Val metrics
-    # -------------------------
     metrics = evaluate_mil(rr, model, val_loader)
     auc = metrics.get("auc", None)
     val_auc = float(auc) if isinstance(auc, (float, int)) else -math.inf
     auc_str = f"{val_auc:.4f}" if math.isfinite(val_auc) else "None"
 
-    # -------------------------
-    # Checkpointing: maximize val_auc
-    # -------------------------
+    # Checkpointing
     if val_auc > best_val_auc:
       best_val_auc = val_auc
-      best_epoch = epoch + 1  # 1-based
+      best_epoch = epoch + 1
       if cfg.export.save_best_weights:
         torch.save(model.state_dict(), best_path)
 
-    # -------------------------
     # Logging
-    # -------------------------
     best_auc_str = f"{best_val_auc:.4f}" if math.isfinite(best_val_auc) else "None"
     log.info(
       f"Epoch {epoch+1}/{cfg.train.epochs} | "
@@ -218,20 +179,18 @@ def fit_mil(
       f"patience={stopper_loss.counter}/{stopper_loss.patience}"
     )
 
-    # -------------------------
-    # Early stopping: minimize val_loss
-    # -------------------------
+    # Early stopping
     stopper_loss.step(val_loss)
     if stopper_loss.early_stop:
-      log.info("[Early Stop] Training stopped (val_loss criterion).")
+      log.info("[Early Stop] Training stopped.")
       break
 
-  # Load best weights (by val_auc)
+  # Load best weights
   if cfg.export.save_best_weights and best_path.exists():
     log.info(f"[DONE] Best model saved to {best_path}")
     model.load_state_dict(torch.load(best_path, map_location=rr.device))
 
-  # Persist best summary
+  # Save summary
   summary = {
     "best_epoch": int(best_epoch),
     "best_val_auc": None if not math.isfinite(best_val_auc) else float(best_val_auc),
