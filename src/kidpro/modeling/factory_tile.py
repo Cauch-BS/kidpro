@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import math
 from typing import cast
 
@@ -8,14 +7,12 @@ import segmentation_models_pytorch as smp
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from peft import LoraConfig, TaskType, get_peft_model
 from torch.nn import Module
 from torch.optim import Optimizer
 
 from ..config.schema import AppCfg, SegTaskCfg
+from .lora import apply_lora
 from .sources import build_foundation, freeze_module
-
-log = logging.getLogger(__name__)
 
 
 class SimpleUpsampleDecoder(nn.Module):
@@ -41,40 +38,6 @@ class SimpleUpsampleDecoder(nn.Module):
     return cast(torch.Tensor, self.out_conv(x))
 
 
-def _has_lora_targets(module: nn.Module, target_modules: list[str]) -> bool:
-  for name, _ in module.named_modules():
-    for target in target_modules:
-      if name == target or name.endswith(f".{target}"):
-        return True
-  return False
-
-
-def _apply_lora(cfg: AppCfg, encoder: nn.Module, freeze_base: bool) -> nn.Module:
-  lora_cfg = cfg.model.lora
-  if not lora_cfg.enabled:
-    return encoder
-
-  if freeze_base:
-    freeze_module(encoder)
-
-  if not _has_lora_targets(encoder, lora_cfg.target_modules):
-    log.warning(
-      "LoRA enabled but no target modules matched. "
-      "Skipping LoRA wrap; encoder remains frozen."
-    )
-    return encoder
-
-  peft_cfg = LoraConfig(
-    r=lora_cfg.r,
-    lora_alpha=lora_cfg.alpha,
-    lora_dropout=lora_cfg.dropout,
-    bias=lora_cfg.bias,
-    target_modules=lora_cfg.target_modules,
-    task_type=TaskType.FEATURE_EXTRACTION,
-  )
-  return cast(nn.Module, get_peft_model(encoder, peft_cfg))
-
-
 class FoundationSegmentationModel(nn.Module):
   def __init__(self, cfg: AppCfg, num_classes: int) -> None:
     super().__init__()
@@ -83,7 +46,7 @@ class FoundationSegmentationModel(nn.Module):
     self.feat_dim = foundation.feat_dim
     encoder = getattr(self.backbone, "tile_encoder", self.backbone)
     if cfg.model.lora.enabled:
-      encoder = _apply_lora(cfg, encoder, freeze_base=cfg.model.freeze_backbone)
+      encoder = apply_lora(cfg, encoder, freeze_base=cfg.model.freeze_backbone)
       if getattr(self.backbone, "tile_encoder", None) is not None:
         self.backbone.tile_encoder = encoder
       else:

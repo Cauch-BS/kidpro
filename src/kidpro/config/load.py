@@ -143,3 +143,42 @@ def CONFIG_EXPORT(cfg: AppCfg, rr: RuntimeResolved) -> None:
 
     with open(run_dir / cfg.export.env_json_name, "w") as f:
       json.dump(env, f, indent=2)
+
+
+def _resolve_dataset_default(config_path: Path) -> str:
+  if not config_path.exists():
+    raise FileNotFoundError(f"Config not found: {config_path}")
+  cfg = OmegaConf.load(config_path)
+  defaults = cfg.get("defaults", []) # type: ignore
+  if not isinstance(defaults, list):
+    raise ValueError("Expected 'defaults' to be a list in config.yaml")
+  for item in defaults:
+    if isinstance(item, dict) and "dataset" in item:
+      return str(item["dataset"])
+  raise ValueError("No dataset default found in config.yaml defaults")
+
+
+def resolve_tile_runs_root(repo_root: Path | None = None) -> Path:
+  repo_root = repo_root or Path(__file__).resolve().parents[3]
+  conf_dir = repo_root / "conf"
+  config_path = conf_dir / "config.yaml"
+  dataset_name = _resolve_dataset_default(config_path)
+  dataset_cfg_path = conf_dir / "dataset" / f"{dataset_name}.yaml"
+  if not dataset_cfg_path.exists():
+    raise FileNotFoundError(f"Dataset config not found: {dataset_cfg_path}")
+  ds_cfg = OmegaConf.to_container(OmegaConf.load(dataset_cfg_path), resolve=True)
+  if not isinstance(ds_cfg, dict):
+    raise ValueError("Dataset config must be a mapping")
+  paths = ds_cfg.get("paths", {})
+  if not isinstance(paths, dict) or "runs_root" not in paths:
+    raise ValueError("dataset.paths.runs_root is required in dataset config")
+  return Path(paths["runs_root"])
+
+
+def find_latest_best_model(runs_root: Path, best_name: str = "best_model.pt") -> Path:
+  if not runs_root.exists():
+    raise FileNotFoundError(f"runs_root not found: {runs_root}")
+  candidates = [p for p in runs_root.rglob(best_name) if p.is_file()]
+  if not candidates:
+    raise FileNotFoundError(f"No {best_name} found under runs_root: {runs_root}")
+  return max(candidates, key=lambda p: p.stat().st_mtime)

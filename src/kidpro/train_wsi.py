@@ -2,16 +2,24 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import cast
 
 import hydra
 import torch
 from omegaconf import DictConfig
+from torch import nn
 
-from .config.load import CONFIG, CONFIG_EXPORT
+from .config.load import (
+    CONFIG,
+    CONFIG_EXPORT,
+    find_latest_best_model,
+    resolve_tile_runs_root,
+)
 from .data.dataset_mil import MILDataset
 from .data.split_mil import build_mil_split_csv
 from .data.transform import get_transforms
 from .modeling.factory_wsi import build_model_mil
+from .modeling.sources import load_state_dict_generic
 from .training.loop_mil import fit_mil
 
 log = logging.getLogger(__name__)
@@ -58,6 +66,17 @@ def main(hcfg: DictConfig) -> None:
   )
 
   model = build_model_mil(cfg).to(rr.device)
+  if cfg.model.lora.enabled:
+    try:
+      tile_runs_root = resolve_tile_runs_root()
+      ckpt_path = find_latest_best_model(tile_runs_root, cfg.export.best_weights_name)
+      load_state_dict_generic(cast(nn.Module, model.tile_encoder), ckpt_path)
+      log.info(f"[LORA INIT] Loaded tile checkpoint: {ckpt_path}")
+    except Exception as e:
+      raise RuntimeError(
+        "Failed to resolve or load tile-trained best_model.pt for LoRA initialization."
+      ) from e
+
   criterion = torch.nn.CrossEntropyLoss()
   optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.lr)
 

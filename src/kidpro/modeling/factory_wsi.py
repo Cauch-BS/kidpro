@@ -3,6 +3,7 @@ from __future__ import annotations
 from torch.nn import Module
 
 from ..config.schema import AppCfg
+from .lora import apply_lora
 from .sources import build_foundation, freeze_module
 
 
@@ -16,17 +17,24 @@ def build_model_mil(cfg: AppCfg) -> Module:
       "(expected 'mil')"
     )
   foundation = build_foundation(cfg)
-  if cfg.model.freeze_backbone:
-    freeze_module(foundation.backbone)
   backbone = foundation.backbone
   feat_dim = foundation.feat_dim
+  tile_encoder = getattr(backbone, "tile_encoder", backbone)
+
+  if cfg.model.lora.enabled:
+    tile_encoder = apply_lora(cfg, tile_encoder, freeze_base=cfg.model.freeze_backbone)
+    if getattr(backbone, "tile_encoder", None) is not None:
+      backbone.tile_encoder = tile_encoder
+    else:
+      backbone = tile_encoder
+  elif cfg.model.freeze_backbone:
+    freeze_module(backbone)
 
   # MIL head configuration
   num_classes = getattr(cfg.dataset.task, "num_classes", 2)
 
   from .longnet import LongNetMIL, LongNetViT
 
-  tile_encoder = getattr(backbone, "tile_encoder", backbone)
   dim = cfg.model.longnet_dim
   slide_encoder = LongNetViT(
     in_chans=int(getattr(cfg.model, "foundation_dim", feat_dim)),
