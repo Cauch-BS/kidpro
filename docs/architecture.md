@@ -18,6 +18,7 @@ flowchart TD
   PatchGen --> PatchDataset[Segmentation_Patches]
   PatchDataset --> TrainTile[Train_Tile_Seg]
   TrainTile --> TileModel[Tile_Model_Checkpoint]
+  TileModel --> TrainWSI
 
   WSI --> Inference[WSI_Inference]
   WSIModel --> Inference

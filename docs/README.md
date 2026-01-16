@@ -29,4 +29,4 @@ Quickstart (happy path):
 6. Run inference:
    `python -m kidpro.infer_wsi inference.wsi_path=/path/to/slide.svs`
 
-> [!NOTE] Unless otherwise specified, all commands should be run from the root of the repository.
+⚠️ Note: Unless otherwise specified, all commands should be run from the root of the repository.
