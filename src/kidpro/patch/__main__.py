@@ -145,8 +145,8 @@ def patch_multi(
   output_map: dict[str, str],
   target_mag: float = 10.0,
   mask_mag: float = 2.5,
-  patch_size: int = 512,
-  stride: int = 512,
+  patch_size: int = 256,
+  stride: int = 256,
   overlap_th: float = 0.05,
   num_workers: int = 16,
   allowed_mags: list[float] | None = None,
@@ -154,10 +154,7 @@ def patch_multi(
   if not xml_dir.exists():
     raise FileNotFoundError(f"XML directory does not exist: {xml_dir}")
 
-  if segmentation_type == "outcome":
-    xml_list = sorted(xml_dir.rglob("*.xml"))
-  else:
-    xml_list = sorted(xml_dir.glob("*.xml"))
+  xml_list = sorted(xml_dir.glob("*.xml"))
   if not xml_list:
     raise RuntimeError(f"No XML files found in: {xml_dir}")
 

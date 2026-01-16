@@ -1,4 +1,3 @@
-# conf/dataset/wsi.yaml
 paths:
   root_dir: /home/khdp-user/workspace/output/MIL_patch
   runs_root: /home/khdp-user/workspace/output/MIL_run_cls

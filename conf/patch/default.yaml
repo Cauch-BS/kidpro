@@ -13,12 +13,11 @@ patch:
     glomerulus: Glom_patch
     ifta: IFTA_patch
     inflammation: Infla_patch
-    outcome: MIL_patch
   params:
     target_mag: 10.0
     mask_mag: 2.5
-    patch_size: 512
-    stride: 512
+    patch_size: 256
+    stride: 256
     overlap_th: 0.05
     num_workers: 16
     allowed_mags: [2.5, 10.0, 40.0]
