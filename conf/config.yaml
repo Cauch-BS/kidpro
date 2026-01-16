@@ -1,6 +1,6 @@
 defaults:
 - hydra: default
-- model: unet
+- model: prov_gigapath
 - train: default
 - dataset: glom 
 - core: default

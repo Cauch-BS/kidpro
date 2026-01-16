@@ -60,7 +60,20 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> None:
     head_prefixes = ("fc.", "classifier.", "head.", "last_linear.")
     filtered = {k: v for k, v in state.items() if not k.startswith(head_prefixes)}
 
-    missing, unexpected = model.load_state_dict(filtered, strict=False)
+    # Allow common wrapper prefixes (DDP, nested modules, or segmentation heads)
+    prefixes = ("module.", "model.", "backbone.", "tile_encoder.")
+    stripped: dict[str, torch.Tensor] = {}
+    for k, v in filtered.items():
+        matched = False
+        for prefix in prefixes:
+            if k.startswith(prefix):
+                stripped[k[len(prefix):]] = v
+                matched = True
+                break
+        if not matched:
+            stripped[k] = v
+
+    missing, unexpected = model.load_state_dict(stripped, strict=False)
     print("[FND CKPT]", "missing:", missing[:8], "unexpected:", unexpected[:8])
 
 

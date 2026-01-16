@@ -11,7 +11,7 @@ from .config.load import CONFIG, CONFIG_EXPORT
 from .data.dataset import SegDataset
 from .data.split import build_dataset_csv
 from .data.transform import get_transforms
-from .modeling.factory import build_loss, build_model, build_optimizer
+from .modeling.factory_tile import build_loss, build_model, build_optimizer
 from .training.loop import fit
 
 log = logging.getLogger(__name__)
