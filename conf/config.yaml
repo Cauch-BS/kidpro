@@ -3,5 +3,6 @@ defaults:
 - model: prov_gigapath
 - train: default
 - dataset: glom 
+- mlflow: default
 - core: default
 - _self_

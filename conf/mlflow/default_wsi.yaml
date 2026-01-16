@@ -1,0 +1,4 @@
+enabled: true
+registry_model_name: wsi_model
+selection_metric: val_auc
+tracking_uri: null

@@ -145,40 +145,71 @@ def CONFIG_EXPORT(cfg: AppCfg, rr: RuntimeResolved) -> None:
       json.dump(env, f, indent=2)
 
 
-def _resolve_dataset_default(config_path: Path) -> str:
-  if not config_path.exists():
-    raise FileNotFoundError(f"Config not found: {config_path}")
-  cfg = OmegaConf.load(config_path)
-  defaults = cfg.get("defaults", []) # type: ignore
-  if not isinstance(defaults, list):
-    raise ValueError("Expected 'defaults' to be a list in config.yaml")
-  for item in defaults:
-    if isinstance(item, dict) and "dataset" in item:
-      return str(item["dataset"])
-  raise ValueError("No dataset default found in config.yaml defaults")
+def _resolve_mlflow_model_weights(model_dir: Path) -> Path:
+  candidates = [
+    model_dir / "data" / "best_model.pth",
+    model_dir / "data" / "best_model.pt",
+  ]
+  for candidate in candidates:
+    if candidate.exists():
+      return candidate
+  fallback = list(model_dir.rglob("*.pth")) + list(model_dir.rglob("*.pt"))
+  if not fallback:
+    raise FileNotFoundError(f"No .pth/.pt weights found under MLflow model dir: {model_dir}")
+  return fallback[0]
 
 
-def resolve_tile_runs_root(repo_root: Path | None = None) -> Path:
-  repo_root = repo_root or Path(__file__).resolve().parents[3]
-  conf_dir = repo_root / "conf"
-  config_path = conf_dir / "config.yaml"
-  dataset_name = _resolve_dataset_default(config_path)
-  dataset_cfg_path = conf_dir / "dataset" / f"{dataset_name}.yaml"
-  if not dataset_cfg_path.exists():
-    raise FileNotFoundError(f"Dataset config not found: {dataset_cfg_path}")
-  ds_cfg = OmegaConf.to_container(OmegaConf.load(dataset_cfg_path), resolve=True)
-  if not isinstance(ds_cfg, dict):
-    raise ValueError("Dataset config must be a mapping")
-  paths = ds_cfg.get("paths", {})
-  if not isinstance(paths, dict) or "runs_root" not in paths:
-    raise ValueError("dataset.paths.runs_root is required in dataset config")
-  return Path(paths["runs_root"])
+def resolve_best_tile_model_from_mlflow(cfg: AppCfg, tile_model_name: str = "tile_model") -> Path:
+  """
+  Resolve the best tile checkpoint from MLflow Model Registry.
 
+  Usage guide:
+  - Enable MLflow in config: `mlflow.enabled=true`
+  - Set `mlflow.registry_model_name` to the registered model name used by train_tile
+  - Ensure train_tile logs `val_iou` (or the metric in `mlflow.selection_metric`)
+  - The model with the highest selection metric is downloaded and its weights returned
+  """
+  if not cfg.mlflow.enabled:
+    raise RuntimeError("MLflow is disabled; enable mlflow to resolve tile checkpoints.")
 
-def find_latest_best_model(runs_root: Path, best_name: str = "best_model.pt") -> Path:
-  if not runs_root.exists():
-    raise FileNotFoundError(f"runs_root not found: {runs_root}")
-  candidates = [p for p in runs_root.rglob(best_name) if p.is_file()]
-  if not candidates:
-    raise FileNotFoundError(f"No {best_name} found under runs_root: {runs_root}")
-  return max(candidates, key=lambda p: p.stat().st_mtime)
+  try:
+    import mlflow  # type: ignore[import-not-found]
+    from mlflow.artifacts import download_artifacts  # type: ignore[import-not-found]
+    from mlflow.tracking import MlflowClient  # type: ignore[import-not-found]
+  except Exception as e:
+    raise RuntimeError("MLflow is enabled but could not be imported.") from e
+
+  if cfg.mlflow.tracking_uri:
+    mlflow.set_tracking_uri(cfg.mlflow.tracking_uri)
+
+  client = MlflowClient()
+  try:
+    versions = client.search_model_versions(f"name='{tile_model_name}'")
+  except Exception as e:
+    raise RuntimeError(f"Failed to search for model versions with name '{tile_model_name}'.") from e
+  if not versions:
+    raise FileNotFoundError(
+      f"No model versions found with name '{tile_model_name}'."
+    )
+
+  metric_name = cfg.mlflow.selection_metric
+  best_version = None
+  best_metric = None
+  for version in versions:
+    run = client.get_run(version.run_id)
+    metric_val = run.data.metrics.get(metric_name)
+    if metric_val is None:
+      continue
+    if best_metric is None or metric_val > best_metric:
+      best_metric = metric_val
+      best_version = version
+
+  if best_version is None:
+    raise FileNotFoundError(
+      f"No model versions found with metric '{metric_name}'. "
+      "Make sure train_tile logs this metric to MLflow."
+    )
+
+  model_uri = f"models:/{best_version.name}/{best_version.version}"
+  local_model_dir = Path(download_artifacts(model_uri))
+  return _resolve_mlflow_model_weights(local_model_dir)

@@ -31,6 +31,7 @@ dependencies = [
   "opencv-python>=4.8",
   "einops",
   "fairscale",
+  "mlflow>=2.9",
   # Segmentation models
   "segmentation-models-pytorch>=0.3.3",
   "timm>=0.9.0",

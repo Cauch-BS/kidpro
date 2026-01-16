@@ -278,6 +278,13 @@ class ExportCfg(BaseModel):
   best_weights_name: str = "best_model.pt"
 
 
+class MlflowCfg(BaseModel):
+  enabled: bool = True
+  registry_model_name: str
+  selection_metric: str = "val_iou"
+  tracking_uri: Optional[str] = None
+
+
 class DatasetCfg(BaseModel):
   paths: PathsCfg
   task: TaskCfg
@@ -292,6 +299,7 @@ class AppCfg(BaseModel):
   train: TrainCfg
   runtime: RuntimeCfg
   export: ExportCfg
+  mlflow: MlflowCfg
 
   # Hydra run dir is injected by CONFIG()
   run_dir: Optional[Path] = None

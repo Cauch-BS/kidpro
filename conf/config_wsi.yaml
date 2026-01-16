@@ -1,8 +1,9 @@
 defaults:
-  - hydra: default
-  - model: prov_gigapath
-  - train: default_wsi
-  - dataset: wsi
-  - core: default
-  - _self_
+- hydra: default
+- model: prov_gigapath
+- train: default_wsi
+- dataset: wsi
+- mlflow: default_wsi
+- core: default
+- _self_
   

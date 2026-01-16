@@ -139,6 +139,17 @@ def fit(
     train_loss = train_one_epoch(cfg, rr, model, train_loader, criterion, optimizer)
     val_loss, val_dice, val_iou = validate(cfg, rr, model, val_loader, criterion)
 
+    if cfg.mlflow.enabled:
+      try:
+        import mlflow
+      except Exception:
+        mlflow = None
+      if mlflow is not None and mlflow.active_run():
+        mlflow.log_metric("train_loss", train_loss, step=epoch + 1)
+        mlflow.log_metric("val_loss", val_loss, step=epoch + 1)
+        mlflow.log_metric("val_dice", val_dice, step=epoch + 1)
+        mlflow.log_metric("val_iou", val_iou, step=epoch + 1)
+
     is_best = stopper.step(val_loss)
     if is_best and cfg.export.save_best_weights:
       torch.save(model.state_dict(), best_path)

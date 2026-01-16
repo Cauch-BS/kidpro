@@ -60,7 +60,38 @@ def main(hcfg: DictConfig) -> None:
   optimizer = build_optimizer(cfg, model)
 
   # Train
-  best_path = fit(cfg, rr, model, dl_tr, dl_va, criterion, optimizer)
+  if cfg.mlflow.enabled:
+    try:
+      import mlflow  # type: ignore[import-not-found]
+      import mlflow.pytorch  # type: ignore[import-not-found]
+    except Exception as e:
+      raise RuntimeError("MLflow is enabled but could not be imported.") from e
+
+    if cfg.mlflow.tracking_uri:
+      mlflow.set_tracking_uri(cfg.mlflow.tracking_uri)
+
+    with mlflow.start_run(run_name=run_dir.name):
+      mlflow.log_params(
+        {
+          "model_name": cfg.model.name,
+          "dataset_root_dir": str(cfg.dataset.paths.root_dir),
+          "dataset_csv_name": cfg.dataset.paths.csv_name,
+          "patch_size": cfg.dataset.data.patch_size,
+          "batch_size": cfg.train.batch_size,
+          "epochs": cfg.train.epochs,
+          "lr": cfg.train.lr,
+        }
+      )
+      best_path = fit(cfg, rr, model, dl_tr, dl_va, criterion, optimizer)
+      if cfg.export.save_best_weights and best_path.exists():
+        mlflow.log_artifact(str(best_path), artifact_path="weights")
+      mlflow.pytorch.log_model(
+        model,
+        artifact_path="model",
+        registered_model_name=cfg.mlflow.registry_model_name,
+      )
+  else:
+    best_path = fit(cfg, rr, model, dl_tr, dl_va, criterion, optimizer)
   log.info(f"[RUN COMPLETE] run_dir={run_dir} best={best_path}")
 
 
