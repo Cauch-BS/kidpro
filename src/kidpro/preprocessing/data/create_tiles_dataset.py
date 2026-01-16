@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import tqdm
 from monai.data.wsi_reader import WSIReader
 from PIL import Image
 
@@ -193,7 +194,7 @@ def process_dataset(
     overwrite: bool = False,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    for sample in samples:
+    for sample in tqdm.tqdm(samples, desc="Processing slides"):
         process_slide(
             sample=sample,
             level=level,
