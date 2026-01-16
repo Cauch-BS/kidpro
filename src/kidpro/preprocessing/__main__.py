@@ -10,7 +10,7 @@ from .data.create_tiles_dataset import build_slide_samples, process_dataset
 log = logging.getLogger(__name__)
 
 
-@hydra.main(version_base=None, config_path="../../conf", config_name="preprocess")
+@hydra.main(version_base=None, config_path="conf", config_name="preprocess")
 def main(hcfg: DictConfig) -> None:
     cfg = PREPROCESS_CONFIG(hcfg)
 

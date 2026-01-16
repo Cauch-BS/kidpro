@@ -20,7 +20,7 @@ from .training.loop_mil import fit_mil
 log = logging.getLogger(__name__)
 
 
-@hydra.main(version_base=None, config_path="../../conf", config_name="config_wsi")
+@hydra.main(version_base=None, config_path="conf", config_name="config_wsi")
 def main(hcfg: DictConfig) -> None:
   run_dir = Path.cwd()
   cfg, rr = CONFIG(hcfg, run_dir=run_dir)

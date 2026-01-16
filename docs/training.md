@@ -3,7 +3,7 @@
 ## Tile segmentation training
 
 Entrypoint: `python -m kidpro.train_tile`  
-Config: `conf/config.yaml` (defaults to `dataset=glom`, `model=prov_gigapath`)
+Config: `kidpro/conf/config.yaml` (defaults to `dataset=glom`, `model=prov_gigapath`)
 
 Typical run:
 
@@ -20,14 +20,14 @@ python -m kidpro.train_tile model=uni2_h
 
 Outputs:
 
-- Best checkpoint saved to `<run_dir>/best_model.pt` (see `conf/core/default.yaml`)
+- Best checkpoint saved to `<run_dir>/best_model.pt` (see `kidpro/conf/core/default.yaml`)
 - Resolved config at `<run_dir>/config_resolved.yaml`
 - Environment snapshot at `<run_dir>/training_env.json`
 
 ## WSI MIL training
 
 Entrypoint: `python -m kidpro.train_wsi`  
-Config: `conf/config_wsi.yaml` (defaults to `dataset=wsi`)
+Config: `kidpro/conf/config_wsi.yaml` (defaults to `dataset=wsi`)
 
 Important: WSI training requires the tile encoder to be frozen:
 

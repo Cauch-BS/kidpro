@@ -1,19 +1,19 @@
 # Configuration
 
-KidPro uses Hydra for configuration. The main configs live under `conf/` and are
+KidPro uses Hydra for configuration. The main configs live under `kidpro/conf/` and are
 selected by module entrypoints.
 
 Key configs:
 
-- `conf/config.yaml`: tile segmentation training
-- `conf/config_wsi.yaml`: WSI MIL training
-- `conf/infer_wsi.yaml`: inference
-- `conf/preprocess.yaml`: MIL preprocessing
-- `conf/patch/*.yaml`: patch generation
-- `conf/dataset/*.yaml`: dataset presets
-- `conf/model/*.yaml`: model presets
+- `kidpro/conf/config.yaml`: tile segmentation training
+- `kidpro/conf/config_wsi.yaml`: WSI MIL training
+- `kidpro/conf/infer_wsi.yaml`: inference
+- `kidpro/conf/preprocess.yaml`: MIL preprocessing
+- `kidpro/conf/patch/*.yaml`: patch generation
+- `kidpro/conf/dataset/*.yaml`: dataset presets
+- `kidpro/conf/model/*.yaml`: model presets
 
-Hydra defaults specify the active presets. Example from `conf/config.yaml`:
+Hydra defaults specify the active presets. Example from `kidpro/conf/config.yaml`:
 
 ```yaml
 defaults:

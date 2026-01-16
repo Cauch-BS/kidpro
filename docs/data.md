@@ -3,7 +3,7 @@
 ## Patch generation (segmentation)
 
 Patch generation uses XML annotations and SVS slides to create an image+mask dataset.
-Default config: `conf/patch/default.yaml`.
+Default config: `kidpro/conf/patch/default.yaml`.
 
 Command:
 
@@ -35,12 +35,12 @@ The `layer_ids` list controls which mask layers are produced.
 - `path`: full path to patch
 - `split`: train/val/test
 
-Splits are generated using the ratios in `conf/dataset/*.yaml`.
+Splits are generated using the ratios in `kidpro/conf/dataset/*.yaml`.
 
 ## MIL preprocessing (WSI to tiles)
 
 Preprocessing converts WSIs into a MIL tile layout expected by `MILDataset`.
-Default config: `conf/preprocess.yaml`.
+Default config: `kidpro/conf/preprocess.yaml`.
 
 Command:
 

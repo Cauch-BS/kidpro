@@ -130,7 +130,7 @@ class LoadROId(MapTransform):
         # but relative region size in pixels at the chosen level
         scale = image_obj.level_downsamples[self.level]
         scaled_bbox = level0_bbox / scale
-        origin = (level0_bbox.y, level0_bbox.x)
+        origin = (level0_bbox.x, level0_bbox.y)
         get_data_kwargs = dict(location=origin,
                                size=(scaled_bbox.h, scaled_bbox.w),
                                level=self.level)

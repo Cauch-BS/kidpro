@@ -7,7 +7,7 @@
   - `training/`: training loops
   - `modeling/`: model factories and backbones
   - `config/`: schema and config loading
-- `conf/`: Hydra config tree
+- `kidpro/conf/`: Hydra config tree
 - `models/`: local checkpoint location (not versioned)
 
 ## Entry points
@@ -36,7 +36,7 @@ mypy src/kidpro
 
 ## Extension points
 
-- Add new datasets under `conf/dataset/*.yaml`.
+- Add new datasets under `kidpro/conf/dataset/*.yaml`.
 - Add new backbones under `src/kidpro/modeling/sources/`.
 - Extend model selection in `src/kidpro/modeling/factory_*`.
 

@@ -42,4 +42,3 @@ foundation_dim: 1024
 
 # --- Input expectations (used by transforms via data.patch_size today) ---
 input_size: 224
-

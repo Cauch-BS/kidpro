@@ -77,7 +77,7 @@ def _generate_tiles(
 
 def _load_slide_patches(
   slide_images_dir: Path,
-  transform: Optional[Callable[[Any], Any]] = None,
+  transform: Optional[Callable] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
   patch_paths = sorted(slide_images_dir.glob("*.png"))
   if not patch_paths:
@@ -94,7 +94,7 @@ def _load_slide_patches(
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
     if transform:
-      img_t = transform(img)["image"]
+      img_t = transform(image=img)["image"]
     else:
       img_t = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0  # type: ignore
 
@@ -171,7 +171,7 @@ def run_wsi_inference(cfg: AppCfg, rr: RuntimeResolved) -> Dict[str, Any]:
   return result
 
 
-@hydra.main(version_base=None, config_path="../../conf", config_name="infer_wsi")
+@hydra.main(version_base=None, config_path="conf", config_name="infer_wsi")
 def main(hcfg: DictConfig) -> None:
   run_dir = Path.cwd()
   cfg, rr = CONFIG(hcfg, run_dir=run_dir)

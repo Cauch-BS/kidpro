@@ -24,7 +24,7 @@ Default segmentation training targets glomerulus only.
 Before segmentation training, generate glomerulus patches from the XML/SVS
 annotations. This produces the `Glom_patch` dataset used by `dataset=glom`.
 
-Default run (uses `conf/patch/default.yaml`, which targets glomerulus):
+Default run (uses `kidpro/conf/patch/default.yaml`, which targets glomerulus):
 
 - `python -m kidpro.patch`
 
@@ -44,7 +44,7 @@ Optional: generate alternative patch targets when needed:
 Offline preprocessing writes tiles into the MIL dataset layout expected by `MILDataset`:
 `<root_dir>/<SlideName>/images/<SlideName>_X0Y0_XXXXXX_YYYYYY.png`.
 
-Default run (uses `conf/preprocess.yaml`):
+Default run (uses `kidpro/conf/preprocess.yaml`):
 
 - `python -m kidpro.preprocessing`
 
@@ -62,10 +62,10 @@ Common overrides:
 
 ## Training (Hydra)
 
-Training configs live under `conf/` and are selected via the module entrypoint:
+Training configs live under `kidpro/conf/` and are selected via the module entrypoint:
 
-- Tile segmentation: `python -m kidpro.train_tile` (uses `conf/config.yaml`)
-- WSI MIL: `python -m kidpro.train_wsi` (uses `conf/config_wsi.yaml`)
+- Tile segmentation: `python -m kidpro.train_tile` (uses `kidpro/conf/config.yaml`)
+- WSI MIL: `python -m kidpro.train_wsi` (uses `kidpro/conf/config_wsi.yaml`)
 
 Override examples:
 
@@ -88,7 +88,7 @@ locally before running inference.
 
 ## WSI Inference
 
-Run WSI inference with the default config (`conf/infer_wsi.yaml`):
+Run WSI inference with the default config (`kidpro/conf/infer_wsi.yaml`):
 
 - `python -m kidpro.infer_wsi inference.wsi_path=/path/to/slide.svs`
 

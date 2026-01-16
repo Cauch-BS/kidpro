@@ -17,7 +17,7 @@ def build_dataset_csv(cfg: AppCfg) -> pd.DataFrame:
 
   n = len(slide_ids)
   n_test = int(n * cfg.dataset.data.test_ratio)
-  n_val = int((n - n_test) * cfg.dataset.data.val_ratio)
+  n_val = int(n * cfg.dataset.data.val_ratio)
 
   test_slides = set(slide_ids[:n_test])
   val_slides = set(slide_ids[n_test : n_test + n_val])

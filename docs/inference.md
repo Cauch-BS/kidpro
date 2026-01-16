@@ -1,7 +1,7 @@
 # Inference
 
 Entrypoint: `python -m kidpro.infer_wsi`  
-Config: `conf/infer_wsi.yaml`
+Config: `kidpro/conf/infer_wsi.yaml`
 
 Basic run:
 

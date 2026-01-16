@@ -17,7 +17,7 @@ from .training.loop import fit
 log = logging.getLogger(__name__)
 
 
-@hydra.main(version_base=None, config_path="../../conf", config_name="config")
+@hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(hcfg: DictConfig) -> None:
   run_dir = Path.cwd()  # Hydra job.chdir=true => cwd is the unique run directory
   cfg, rr = CONFIG(hcfg, run_dir=run_dir)

@@ -98,6 +98,11 @@ class MILDataset(Dataset):
     if len(imgs) == 0:
       raise RuntimeError(f"All patches failed to load for slide: {slide_name}")
 
-    x = torch.stack([torch.from_numpy(img) for img in imgs], dim=0)  # (N,3,H,W)
+    # imgs already contains tensors (from ToTensorV2 or manual conversion)
+    # but guard in case a numpy array slips through.
+    x = torch.stack(
+      [img if isinstance(img, torch.Tensor) else torch.from_numpy(img) for img in imgs],
+      dim=0,
+    )  # (N,3,H,W)
     xy = torch.tensor(coords, dtype=torch.float32)  # (N,2) # type: ignore
     return x, y, xy, slide_name
