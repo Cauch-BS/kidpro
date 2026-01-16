@@ -278,6 +278,18 @@ class ExportCfg(BaseModel):
   best_weights_name: str = "best_model.pt"
 
 
+class InferenceCfg(BaseModel):
+  wsi_path: Path
+  slide_id: Optional[str] = None
+  tiles_dir: Optional[Path] = None
+  output_dir: Optional[Path] = None
+  output_json: str = "prediction.json"
+  tile_size: Optional[int] = None
+  cleanup_tiles: bool = False
+  preprocess: PreprocessCfg = Field(default_factory=PreprocessCfg)
+  fallback_weights: Optional[Path] = None
+
+
 class MlflowCfg(BaseModel):
   enabled: bool = True
   registry_model_name: str
@@ -300,6 +312,7 @@ class AppCfg(BaseModel):
   runtime: RuntimeCfg
   export: ExportCfg
   mlflow: MlflowCfg
+  inference: Optional[InferenceCfg] = None
 
   # Hydra run dir is injected by CONFIG()
   run_dir: Optional[Path] = None

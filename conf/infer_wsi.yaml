@@ -1,0 +1,24 @@
+defaults:
+  - hydra: default
+  - model: prov_gigapath
+  - train: default_wsi
+  - dataset: wsi
+  - mlflow: default_wsi
+  - core: default
+  - _self_
+
+inference:
+  wsi_path: /path/to/slide.svs
+  slide_id: null
+  tiles_dir: ${hydra:run.dir}/tiles
+  output_dir: ${hydra:run.dir}
+  output_json: prediction.json
+  tile_size: null
+  cleanup_tiles: false
+  preprocess:
+    level: 0
+    margin: 0
+    occupancy_threshold: 0.1
+    foreground_threshold: null
+    overwrite: false
+  fallback_weights: ${hydra:runtime.cwd}/models/best_model.pt
