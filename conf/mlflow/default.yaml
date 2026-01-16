@@ -1,4 +1,4 @@
 enabled: true
 registry_model_name: tile_model
 selection_metric: val_iou
-tracking_uri: null
+tracking_uri: http://localhost:5000
