@@ -11,7 +11,7 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from ..utils.seed import seed_everything
-from .schema import AppCfg, MILTaskCfg, PatchCfg, SegTaskCfg
+from .schema import AppCfg, MILTaskCfg, PatchCfg, PreprocessAppCfg, SegTaskCfg
 
 
 @dataclass(frozen=True)
@@ -55,6 +55,13 @@ def PATCH_CONFIG(hcfg: DictConfig) -> PatchCfg:
   if not isinstance(patch_cfg, dict):
     raise ValueError("Patch config must be a mapping under the 'patch' key.")
   return PatchCfg.model_validate(patch_cfg) # type: ignore
+
+
+def PREPROCESS_CONFIG(hcfg: DictConfig) -> PreprocessAppCfg:
+  cfg_dict = OmegaConf.to_container(hcfg, resolve=True)
+  if not isinstance(cfg_dict, dict):
+    raise ValueError("Preprocess config must be a mapping.")
+  return PreprocessAppCfg.model_validate(cfg_dict) # type: ignore
 
 
 def _git_info() -> Dict[str, Any]:

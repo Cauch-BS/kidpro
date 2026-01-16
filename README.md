@@ -1,11 +1,5 @@
 # 🔬 Path Kids: AI for Renal Pathology
 
-Project Status: Planning
-Domain: Medical AI
-Python Version: 3.10
-
-> **Path Kids** is a deep learning project to assist and automate renal pathology (Whole Slide Image, WSI) analysis.
-
 ---
 
 ## 🎯 Project Goal
@@ -26,6 +20,27 @@ Example usage:
 - Preset run: `python -m kidpro.patch --config-name patch/ifta`
 - Override paths: `python -m kidpro.patch patch.paths.svs_dir=/data/Slide patch.paths.xml_dir=/data/Annotation/Glomerulus`
 - Override params: `python -m kidpro.patch patch.params.overlap_th=0.3 patch.params.num_workers=8`
+
+## MIL Preprocessing (WSI → tiles)
+
+Offline preprocessing writes tiles into the MIL dataset layout expected by `MILDataset`:
+`<root_dir>/<SlideName>/images/<SlideName>_X0Y0_XXXXXX_YYYYYY.png`.
+
+Default run (uses `conf/preprocess.yaml`):
+
+- `python -m kidpro.preprocessing`
+
+Inputs:
+
+- `paths.label_csv` must include `SlideName`.
+- If the CSV has `image_path` (or `image`) column, those paths are used.
+- Otherwise, paths are resolved from `paths.wsi_dir` + `paths.wsi_ext`.
+
+Common overrides:
+
+- `python -m kidpro.preprocessing preprocess.level=1`
+- `python -m kidpro.preprocessing preprocess.occupancy_threshold=0.2`
+- `python -m kidpro.preprocessing data.patch_size=256`
 
 ## Training (Hydra)
 

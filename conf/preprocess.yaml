@@ -1,0 +1,19 @@
+defaults:
+  - hydra: default
+  - _self_
+
+paths:
+  root_dir: /home/khdp-user/workspace/output/MIL_patch
+  label_csv: /home/khdp-user/workspace/dataset/CSV/GT_label.csv
+  wsi_dir: /home/khdp-user/workspace/dataset/Slide
+  wsi_ext: .svs
+
+data:
+  patch_size: 256
+
+preprocess:
+  level: 0
+  margin: 0
+  occupancy_threshold: 0.1
+  foreground_threshold: null
+  overwrite: false

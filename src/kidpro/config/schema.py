@@ -166,6 +166,41 @@ class DataCfg(BaseModel):
     return self
 
 
+class PreprocessDataCfg(BaseModel):
+  patch_size: int = 512
+
+  @model_validator(mode="after")
+  def _validate(self) -> "PreprocessDataCfg":
+    if self.patch_size <= 0:
+      raise ValueError("data.patch_size must be > 0.")
+    return self
+
+
+class PreprocessPathsCfg(BaseModel):
+  root_dir: Path
+  label_csv: Path
+  wsi_dir: Optional[Path] = None
+  wsi_ext: str = ".svs"
+
+
+class PreprocessCfg(BaseModel):
+  level: int = 0
+  margin: int = 0
+  occupancy_threshold: float = 0.1
+  foreground_threshold: Optional[float] = None
+  overwrite: bool = False
+
+  @model_validator(mode="after")
+  def _validate(self) -> "PreprocessCfg":
+    if self.level < 0:
+      raise ValueError("preprocess.level must be >= 0.")
+    if self.margin < 0:
+      raise ValueError("preprocess.margin must be >= 0.")
+    if not (0.0 <= self.occupancy_threshold <= 1.0):
+      raise ValueError("preprocess.occupancy_threshold must be in [0, 1].")
+    return self
+
+
 class EarlyStoppingCfg(BaseModel):
   patience: int = 5
   min_delta: float = 1e-5
@@ -266,6 +301,12 @@ class AppCfg(BaseModel):
         raise ValueError("For segmentation tasks, set model.name='unet' (current implementation).")
 
     return self
+
+
+class PreprocessAppCfg(BaseModel):
+  paths: PreprocessPathsCfg
+  data: PreprocessDataCfg
+  preprocess: PreprocessCfg
 
 # -------------------------
 # Patch config (Hydra patch CLI)
