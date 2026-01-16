@@ -62,8 +62,8 @@ def main(hcfg: DictConfig) -> None:
   # Train
   if cfg.mlflow.enabled:
     try:
-      import mlflow  # type: ignore[import-not-found]
-      import mlflow.pytorch  # type: ignore[import-not-found]
+      import mlflow
+      import mlflow.pytorch
     except Exception as e:
       raise RuntimeError("MLflow is enabled but could not be imported.") from e
 

@@ -9,7 +9,7 @@ import torch
 from omegaconf import DictConfig
 from torch import nn
 
-from .config.load import CONFIG, CONFIG_EXPORT, resolve_best_tile_model_from_mlflow
+from .config.load import CONFIG, CONFIG_EXPORT, resolve_best_model_from_mlflow
 from .data.dataset_mil import MILDataset
 from .data.split_mil import build_mil_split_csv
 from .data.transform import get_transforms
@@ -63,7 +63,7 @@ def main(hcfg: DictConfig) -> None:
   model = build_model_mil(cfg).to(rr.device)
   if cfg.model.lora.enabled:
     try:
-      ckpt_path = resolve_best_tile_model_from_mlflow(cfg)
+      ckpt_path = resolve_best_model_from_mlflow(cfg, "tile_model")
       load_state_dict_generic(cast(nn.Module, model.tile_encoder), ckpt_path)
       log.info(f"[LORA INIT] Loaded tile checkpoint: {ckpt_path}")
     except Exception as e:

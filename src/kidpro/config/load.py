@@ -159,7 +159,7 @@ def _resolve_mlflow_model_weights(model_dir: Path) -> Path:
   return fallback[0]
 
 
-def resolve_best_tile_model_from_mlflow(cfg: AppCfg, tile_model_name: str = "tile_model") -> Path:
+def resolve_best_model_from_mlflow(cfg: AppCfg, model_name: str) -> Path:
   """
   Resolve the best tile checkpoint from MLflow Model Registry.
 
@@ -173,9 +173,9 @@ def resolve_best_tile_model_from_mlflow(cfg: AppCfg, tile_model_name: str = "til
     raise RuntimeError("MLflow is disabled; enable mlflow to resolve tile checkpoints.")
 
   try:
-    import mlflow  # type: ignore[import-not-found]
-    from mlflow.artifacts import download_artifacts  # type: ignore[import-not-found]
-    from mlflow.tracking import MlflowClient  # type: ignore[import-not-found]
+    import mlflow
+    from mlflow.artifacts import download_artifacts
+    from mlflow.tracking import MlflowClient
   except Exception as e:
     raise RuntimeError("MLflow is enabled but could not be imported.") from e
 
@@ -184,18 +184,20 @@ def resolve_best_tile_model_from_mlflow(cfg: AppCfg, tile_model_name: str = "til
 
   client = MlflowClient()
   try:
-    versions = client.search_model_versions(f"name='{tile_model_name}'")
+    versions = client.search_model_versions(f"name='{model_name}'")
   except Exception as e:
-    raise RuntimeError(f"Failed to search for model versions with name '{tile_model_name}'.") from e
+    raise RuntimeError(f"Failed to search for model versions with name '{model_name}'.") from e
   if not versions:
     raise FileNotFoundError(
-      f"No model versions found with name '{tile_model_name}'."
+      f"No model versions found with name '{model_name}'."
     )
 
   metric_name = cfg.mlflow.selection_metric
   best_version = None
   best_metric = None
   for version in versions:
+    if not version.run_id:
+      continue
     run = client.get_run(version.run_id)
     metric_val = run.data.metrics.get(metric_name)
     if metric_val is None:
