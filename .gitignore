@@ -189,3 +189,6 @@ pyrightconfig.json
 
 # parameters
 *.pt
+
+# Mac Development
+*.DS_Store
