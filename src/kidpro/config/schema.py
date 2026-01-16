@@ -79,14 +79,47 @@ class WeightsCfg(BaseModel):
       raise ValueError("model.weights.hf_cache_path is required when weights.source='hf_cache'")
     return self
 
+
+class LoraCfg(BaseModel):
+  enabled: bool = True
+  r: int = 8
+  alpha: int = 16
+  dropout: float = 0.05
+  bias: Literal["none", "all", "lora_only"] = "none"
+  target_modules: list[str] = Field(
+    default_factory=lambda: [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "out_proj",
+      "proj",
+      "qkv",
+    ]
+  )
+
+  @model_validator(mode="after")
+  def _validate(self) -> "LoraCfg":
+    if self.r <= 0:
+      raise ValueError("model.lora.r must be > 0.")
+    if self.alpha <= 0:
+      raise ValueError("model.lora.alpha must be > 0.")
+    if self.dropout < 0 or self.dropout >= 1:
+      raise ValueError("model.lora.dropout must be in [0, 1).")
+    if self.enabled and not self.target_modules:
+      raise ValueError("model.lora.target_modules must be non-empty when lora is enabled.")
+    return self
+
+
 class ModelCfg(BaseModel):
-  name: Literal["unet", "timm", "prov_gigapath", "uni2_h", "virchow2"] = "unet"
+  name: Literal["unet", "timm", "prov_gigapath", "uni2_h", "virchow2"] = "prov_gigapath"
   # Common
   in_channels: int = 3
   num_classes: Optional[int] = None
 
   # Optional weights (used by timm/prov/uni2_h as appropriate)
   weights: Optional[WeightsCfg] = None
+  lora: LoraCfg = Field(default_factory=LoraCfg)
 
   # Unet-specific
   encoder_name: str = "resnet50"
@@ -100,11 +133,8 @@ class ModelCfg(BaseModel):
   # --- foundation model backbones ---
   freeze_backbone: bool = True
 
-  # Adapter projection: foundation_dim -> mil_dim
+  # Foundation output dimension (used by MIL head)
   foundation_dim: Optional[int] = None
-  mil_dim: Optional[int] = None
-  adapter_activation: Literal["relu", "gelu", "tanh"] = "gelu"
-  adapter_dropout: float = 0.25
 
   # LongNet MIL head config
   longnet_dim: int = 1536
@@ -124,8 +154,6 @@ class ModelCfg(BaseModel):
       if not self.arch:
         raise ValueError(f"model.arch is required when model.name='{self.name}'.")
 
-    if self.adapter_dropout < 0 or self.adapter_dropout >= 1:
-      raise ValueError("model.adapter_dropout must be in [0, 1).")
 
     if self.longnet_dim <= 0:
       raise ValueError("model.longnet_dim must be > 0.")
@@ -144,7 +172,7 @@ class ModelCfg(BaseModel):
 # Data / Train / Runtime / Export
 # -------------------------
 class DataCfg(BaseModel):
-  patch_size: int = 512
+  patch_size: int = 256
   train_ratio: float = 0.6
   test_ratio: float = 0.2
   val_ratio: float = 0.2
@@ -167,7 +195,7 @@ class DataCfg(BaseModel):
 
 
 class PreprocessDataCfg(BaseModel):
-  patch_size: int = 512
+  patch_size: int = 256
 
   @model_validator(mode="after")
   def _validate(self) -> "PreprocessDataCfg":
@@ -297,8 +325,11 @@ class AppCfg(BaseModel):
 
     # Segmentation requirements
     if isinstance(task, SegTaskCfg):
-      if model.name != "unet":
-        raise ValueError("For segmentation tasks, set model.name='unet' (current implementation).")
+      if model.name not in ("unet", "timm", "prov_gigapath", "uni2_h", "virchow2"):
+        raise ValueError(
+          "For segmentation tasks, set model.name in "
+          "{'unet','timm','prov_gigapath','uni2_h','virchow2'}."
+        )
 
     return self
 
@@ -307,6 +338,7 @@ class PreprocessAppCfg(BaseModel):
   paths: PreprocessPathsCfg
   data: PreprocessDataCfg
   preprocess: PreprocessCfg
+
 
 # -------------------------
 # Patch config (Hydra patch CLI)
@@ -320,8 +352,8 @@ class PatchPathsCfg(BaseModel):
 class PatchParamsCfg(BaseModel):
   target_mag: float = 10.0
   mask_mag: float = 2.5
-  patch_size: int = 512
-  stride: int = 512
+  patch_size: int = 256
+  stride: int = 256
   overlap_th: float = 0.05
   num_workers: int = 16
   allowed_mags: list[float] = Field(default_factory=lambda: [2.5, 10.0, 40.0])

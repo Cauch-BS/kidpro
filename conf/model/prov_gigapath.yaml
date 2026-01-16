@@ -19,14 +19,27 @@ weights:
   local_path: /home/khdp-user/workspace/huggingface_cache/prov_gigapath/model.pt
   hf_cache_path: /home/khdp-user/workspace/huggingface_cache
 
+# --- LORA knobs ---
+lora:
+  enabled: true
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  bias: none
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "out_proj"
+    - "proj"
+    - "qkv"
+
 freeze_backbone: true
 
-# --- Adapter (foundation_dim -> mil_dim) ---
-foundation_dim: 1536
-mil_dim: 512
-adapter_activation: gelu  # relu | gelu | tanh
-adapter_dropout: 0.25
+# --- Foundation backbone ---
+foundation_dim: 1024
 
 # --- Input expectations (used by transforms via data.patch_size today) ---
-input_size: 256
+input_size: 224
 

@@ -34,6 +34,7 @@ dependencies = [
   # Segmentation models
   "segmentation-models-pytorch>=0.3.3",
   "timm>=0.9.0",
+  "peft>=0.11.1",
   # ML metrics (FIXED: was missing)
   "scikit-learn>=1.3",
 ]
