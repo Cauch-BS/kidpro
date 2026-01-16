@@ -11,16 +11,20 @@ from .config.load import CONFIG, CONFIG_EXPORT
 from .data.dataset_mil import MILDataset
 from .data.split_mil import build_mil_split_csv
 from .data.transform import get_transforms
-from .modeling.factory_mil import build_model_mil
+from .modeling.factory_wsi import build_model_mil
 from .training.loop_mil import fit_mil
 
 log = logging.getLogger(__name__)
 
 
-@hydra.main(version_base=None, config_path="../../conf", config_name="config_mil")
+@hydra.main(version_base=None, config_path="../../conf", config_name="config_wsi")
 def main(hcfg: DictConfig) -> None:
   run_dir = Path.cwd()
   cfg, rr = CONFIG(hcfg, run_dir=run_dir)
+
+  if not cfg.model.freeze_backbone:
+    raise ValueError("train_wsi requires model.freeze_backbone=true.")
+
   CONFIG_EXPORT(cfg, rr)
 
   # Build slide-level CSV (SlideName / GT / split)
