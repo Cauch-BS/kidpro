@@ -16,4 +16,5 @@ preprocess:
   margin: 0
   occupancy_threshold: 0.1
   foreground_threshold: null
+  hsv_s_threshold: 0.05
   overwrite: false

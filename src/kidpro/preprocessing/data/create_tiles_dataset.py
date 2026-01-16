@@ -46,20 +46,26 @@ def save_image(array_chw: np.ndarray, path: Path) -> Image.Image:
 
 
 def generate_tiles(slide_image: np.ndarray, tile_size: int, foreground_threshold: float,
-                  occupancy_threshold: float) -> Tuple[np.ndarray, np.ndarray]:
+                  occupancy_threshold: float, hsv_s_threshold: Optional[float] = None) \
+        -> Tuple[np.ndarray, np.ndarray]:
     """Split the foreground of an input slide image into tiles.
 
     :param slide_image: The RGB image array in (C, H, W) format.
     :param tile_size: Lateral dimensions of each tile, in pixels.
     :param foreground_threshold: Luminance threshold (0 to 255) to determine tile occupancy.
     :param occupancy_threshold: Threshold (between 0 and 1) to determine empty tiles to discard.
+    :param hsv_s_threshold: Optional HSV value cutoff (0 to 1) to filter black frame pixels.
     :return: A tuple containing the image tiles (N, C, H, W) and tile coordinates (N, 2).
     """
     image_tiles, tile_locations = tiling.tile_array_2d(slide_image, tile_size=tile_size,
                                                        constant_values=255)
     logging.info(f"image_tiles.shape: {image_tiles.shape}, dtype: {image_tiles.dtype}")
     logging.info(f"Tiled {slide_image.shape} to {image_tiles.shape}")
-    foreground_mask, _ = segment_foreground(image_tiles, foreground_threshold)
+    foreground_mask, _ = segment_foreground(
+        image_tiles,
+        foreground_threshold,
+        hsv_s_threshold=hsv_s_threshold,
+    )
     selected, _ = select_tiles(foreground_mask, occupancy_threshold)
     n_discarded = (~selected).sum()
     logging.info(f"Percentage tiles discarded: {n_discarded / len(selected) * 100:.2f}")
@@ -80,7 +86,8 @@ def _has_existing_tiles(slide_images_dir: Path) -> bool:
 
 def process_slide(sample: Dict[str, Any], level: int, margin: int, tile_size: int,
                   foreground_threshold: Optional[float], occupancy_threshold: float,
-                  output_dir: Path, overwrite: bool = False) -> Path:
+                  output_dir: Path, overwrite: bool = False,
+                  hsv_s_threshold: Optional[float] = None) -> Path:
     """Load and process a slide, saving tile images and information to a CSV file.
 
     :param sample: Slide information dictionary, returned by the input slide dataset.
@@ -90,6 +97,7 @@ def process_slide(sample: Dict[str, Any], level: int, margin: int, tile_size: in
     :param foreground_threshold: Luminance threshold (0 to 255) to determine tile occupancy.
     If `None` (default), an optimal threshold will be estimated automatically.
     :param occupancy_threshold: Threshold (between 0 and 1) to determine empty tiles to discard.
+    :param hsv_s_threshold: Optional HSV value cutoff (0 to 1) to filter black frame pixels.
     :param output_dir: Root directory for the output dataset; outputs for a single slide will be
     saved inside `output_dir/slide_id/images`.
     """
@@ -109,6 +117,7 @@ def process_slide(sample: Dict[str, Any], level: int, margin: int, tile_size: in
         level=level,
         margin=margin,
         foreground_threshold=foreground_threshold,
+        hsv_s_threshold=hsv_s_threshold,
     )
     sample = loader(sample)  # load 'image' from disk
 
@@ -118,6 +127,7 @@ def process_slide(sample: Dict[str, Any], level: int, margin: int, tile_size: in
         tile_size,
         sample["foreground_threshold"],
         occupancy_threshold,
+        hsv_s_threshold=hsv_s_threshold,
     )
 
     # origin in level-0 coordinate
@@ -179,6 +189,7 @@ def process_dataset(
     margin: int,
     foreground_threshold: Optional[float],
     occupancy_threshold: float,
+    hsv_s_threshold: Optional[float] = None,
     overwrite: bool = False,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -191,5 +202,6 @@ def process_dataset(
             foreground_threshold=foreground_threshold,
             occupancy_threshold=occupancy_threshold,
             output_dir=output_dir,
+            hsv_s_threshold=hsv_s_threshold,
             overwrite=overwrite,
         )

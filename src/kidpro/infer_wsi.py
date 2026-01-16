@@ -68,6 +68,7 @@ def _generate_tiles(
     tile_size=tile_size,
     foreground_threshold=infer_cfg.preprocess.foreground_threshold,
     occupancy_threshold=infer_cfg.preprocess.occupancy_threshold,
+    hsv_s_threshold=infer_cfg.preprocess.hsv_s_threshold,
     output_dir=tiles_root,
     overwrite=infer_cfg.preprocess.overwrite,
   )

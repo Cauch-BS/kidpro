@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
+import skimage.color
 import skimage.filters
 from monai.config.type_definitions import KeysCollection
 from monai.data.wsi_reader import WSIReader
@@ -30,20 +31,47 @@ def get_luminance(slide: np.ndarray) -> np.ndarray:
     return slide.mean(axis=-3, dtype=np.float16)  # type: ignore
 
 
-def segment_foreground(slide: np.ndarray, threshold: Optional[float] = None) \
+def get_hsv_value(slide: np.ndarray) -> np.ndarray:
+    """Compute the HSV value channel for the input slide.
+
+    :param slide: The RGB image array in (*, C, H, W) format.
+    :return: The HSV value channel array as (*, H, W), in [0, 1].
+    The saturation channel is used ([..., 1]).
+    """
+    rgb = np.moveaxis(slide, -3, -1).astype(np.float32)
+    if rgb.max() > 1.0:
+        rgb /= 255.0
+    hsv = skimage.color.rgb2hsv(rgb)
+    return np.asarray(hsv[..., 1])
+
+
+def segment_foreground(slide: np.ndarray, threshold: Optional[float] = None,
+                       hsv_s_threshold: Optional[float] = None) \
         -> Tuple[np.ndarray, float]:
     """Segment the given slide by thresholding its luminance.
 
     :param slide: The RGB image array in (*, C, H, W) format.
     :param threshold: Pixels with luminance below this value will be considered foreground.
     If `None` (default), an optimal threshold will be estimated automatically using Otsu's method.
+    :param hsv_s_threshold: Optional HSV value cutoff (0 to 1). Pixels with s <= threshold
+    are treated as background. Use to filter consistent gray frames.
     :return: A tuple containing the boolean output array in (*, H, W) format and the threshold used.
     """
     luminance = get_luminance(slide)
     if threshold is None:
         threshold = skimage.filters.threshold_otsu(luminance)
     logging.info(f"Otsu threshold from luminance: {threshold}")
-    return luminance < threshold, threshold
+    foreground = luminance < threshold
+
+    if hsv_s_threshold is not None:
+        s_threshold = hsv_s_threshold
+        if s_threshold > 1.0:
+            s_threshold = s_threshold / 255.0
+        value = get_hsv_value(slide)
+        foreground = foreground & (value > s_threshold)
+        logging.info(f"HSV black frame filter S threshold: {s_threshold}")
+
+    return foreground, threshold
 
 
 # MONAI's convention is that dictionary transforms have a 'd' suffix in the class name
@@ -83,7 +111,8 @@ class LoadROId(MapTransform):
     """
 
     def __init__(self, image_reader: WSIReader, image_key: str = "image", level: int = 0,
-                 margin: int = 0, foreground_threshold: Optional[float] = None) -> None:
+                 margin: int = 0, foreground_threshold: Optional[float] = None,
+                 hsv_s_threshold: Optional[float] = None) -> None:
         """
         :param reader: An instance of MONAI's `WSIReader`.
         :param image_key: Image key in the input and output dictionaries.
@@ -96,6 +125,8 @@ class LoadROId(MapTransform):
         self.level = level
         self.margin = margin
         self.foreground_threshold = foreground_threshold
+        self.hsv_s_threshold = hsv_s_threshold
+        print(self.hsv_s_threshold)
 
     def _get_bounding_box(self, slide_obj: OpenSlide) -> box_utils.Box:
         # Estimate bounding box at the lowest resolution (i.e. highest level)
@@ -112,7 +143,11 @@ class LoadROId(MapTransform):
         if slide_obj.level_count == 1:
             logging.warning("Only one image level found. segment_foregound will use a lot of memory.")
 
-        foreground_mask, threshold = segment_foreground(slide, self.foreground_threshold)
+        foreground_mask, threshold = segment_foreground(
+            slide,
+            self.foreground_threshold,
+            self.hsv_s_threshold,
+        )
 
         scale = slide_obj.level_downsamples[highest_level]
         bbox = scale * box_utils.get_bounding_box(foreground_mask).add_margin(self.margin)

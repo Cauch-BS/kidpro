@@ -34,6 +34,7 @@ def main(hcfg: DictConfig) -> None:
         margin=preprocess.margin,
         foreground_threshold=preprocess.foreground_threshold,
         occupancy_threshold=preprocess.occupancy_threshold,
+        hsv_s_threshold=getattr(preprocess, "hsv_s_threshold", None),
         overwrite=preprocess.overwrite,
     )
     log.info("Preprocessing complete. Output: %s", output_dir)

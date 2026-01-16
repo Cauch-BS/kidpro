@@ -216,6 +216,7 @@ class PreprocessCfg(BaseModel):
   margin: int = 0
   occupancy_threshold: float = 0.1
   foreground_threshold: Optional[float] = None
+  hsv_s_threshold: Optional[float] = 0.05
   overwrite: bool = False
 
   @model_validator(mode="after")
@@ -226,6 +227,8 @@ class PreprocessCfg(BaseModel):
       raise ValueError("preprocess.margin must be >= 0.")
     if not (0.0 <= self.occupancy_threshold <= 1.0):
       raise ValueError("preprocess.occupancy_threshold must be in [0, 1].")
+    if self.hsv_s_threshold is not None and not (0.0 <= self.hsv_s_threshold <= 1.0):
+      raise ValueError("preprocess.hsv_s_threshold must be in [0, 1] or None.")
     return self
 
 
