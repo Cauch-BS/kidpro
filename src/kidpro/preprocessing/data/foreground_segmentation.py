@@ -126,7 +126,6 @@ class LoadROId(MapTransform):
         self.margin = margin
         self.foreground_threshold = foreground_threshold
         self.hsv_s_threshold = hsv_s_threshold
-        print(self.hsv_s_threshold)
 
     def _get_bounding_box(self, slide_obj: OpenSlide) -> box_utils.Box:
         # Estimate bounding box at the lowest resolution (i.e. highest level)
