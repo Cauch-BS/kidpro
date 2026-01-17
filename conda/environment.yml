@@ -5,4 +5,5 @@ channels:
 dependencies:
   - python=3.9
   - pip
+  - uv
 prefix: /opt/homebrew/Caskroom/miniconda/base/envs/lazypro
