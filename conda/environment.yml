@@ -1,8 +1,10 @@
-name: lazypro
+name: lazyslide
 channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.9
-  - uv
-prefix: /opt/homebrew/Caskroom/miniconda/base/envs/lazypro
+  - pip
+  - wsidata
+  - python
+  - openslide
+prefix: /opt/homebrew/Caskroom/miniconda/base/envs/lazyslide
