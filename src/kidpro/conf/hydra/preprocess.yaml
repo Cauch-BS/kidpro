@@ -1,0 +1,10 @@
+run:
+  dir: ${paths.out_home}/runs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+sweep:
+  dir: ${paths.out_home}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  subdir: ${hydra.job.num}
+
+job:
+  chdir: true
+
+output_subdir: hydra

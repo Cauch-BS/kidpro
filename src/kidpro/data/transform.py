@@ -31,15 +31,18 @@ def get_transforms(cfg: AppCfg) -> tuple[A.Compose, A.Compose]:
       ToTensorV2(),
     ])
   else:
+    crop_size = input_size if input_size > 0 and input_size != ps else None
     train_tf = A.Compose([
       A.HorizontalFlip(p=0.5),
       A.VerticalFlip(p=0.5),
+      A.Resize(ps, ps, interpolation=cv2.INTER_CUBIC),
+      A.CenterCrop(crop_size, crop_size) if crop_size else A.NoOp(),
       A.Normalize(),
-      A.Resize(ps, ps),
       ToTensorV2(),
     ])
     val_tf = A.Compose([
-      A.Resize(ps, ps),
+      A.Resize(ps, ps, interpolation=cv2.INTER_CUBIC),
+      A.CenterCrop(crop_size, crop_size) if crop_size else A.NoOp(),
       A.Normalize(),
       ToTensorV2(),
     ])

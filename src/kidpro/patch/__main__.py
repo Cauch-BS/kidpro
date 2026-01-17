@@ -212,7 +212,7 @@ def _configure_logging(log_path: Path, level: str) -> None:
   )
 
 
-@hydra.main(version_base=None, config_path="../conf", config_name="patch/default")
+@hydra.main(version_base=None, config_path="../conf", config_name="patch")
 def main(hcfg: DictConfig) -> None:
   cfg = PATCH_CONFIG(hcfg)
 

@@ -340,11 +340,11 @@ class AppCfg(BaseModel):
           f"model.num_classes ({model.num_classes}) must equal dataset.task.num_classes ({task.num_classes})."
         )
 
-      # If model.input_size is provided, must match data.patch_size
-      if model.input_size is not None and model.input_size != data.patch_size:
-          raise ValueError(
-            f"model.input_size ({model.input_size}) must equal data.patch_size ({data.patch_size})."
-          )
+      # If model.input_size is provided, it must not exceed the tile size.
+      if model.input_size is not None and model.input_size > data.patch_size:
+        raise ValueError(
+          f"model.input_size ({model.input_size}) must be <= data.patch_size ({data.patch_size})."
+        )
 
 
     # Segmentation requirements

@@ -40,5 +40,5 @@ freeze_backbone: true
 # --- Foundation backbone ---
 foundation_dim: 1024
 
-# --- Input expectations (used by transforms via data.patch_size today) ---
+# --- Input expectations (center-cropped from data.patch_size tiles) ---
 input_size: 224
