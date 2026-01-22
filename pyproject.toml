@@ -7,7 +7,7 @@ name = "kidpro"
 version = "0.2.0"
 description = "Path Kids Training Pipeline"
 readme = "README.md"
-requires-python = ">=3.9, <3.10"
+requires-python = ">=3.9"
 license = { text = "Proprietary" }
 authors = [
   { name = "Path Kids (Team)" }
