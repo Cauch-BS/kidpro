@@ -4,9 +4,8 @@ from typing import Any, Iterable, Optional
 
 import pandas as pd
 import tqdm
-from PIL import Image
 
-from ..utils.wsidata import extract_tile_xy, open_wsidata, tile_image_to_array
+from ..utils.wsidata import open_wsidata
 
 try:
     from wsidata import WSIData
@@ -23,10 +22,6 @@ except ImportError as exc:
         "lazyslide is required for wsi preprocessing; install lazyslide to continue."
         "Use `conda install -c conda-forge lazyslide` to install."
     ) from exc
-
-
-def _has_existing_tiles(slide_images_dir: Path) -> bool:
-    return slide_images_dir.exists() and any(slide_images_dir.glob("*.png"))
 
 
 def _resolve_mpp(slide_path: Path, level: int) -> Optional[float]:
@@ -68,59 +63,13 @@ def _tile_tissues(
     )
 
 
-def _export_patch_layout(
-    wsi: WSIData,
-    tiles_key: str,
-    patch_root: Path,
-    slide_id: str,
-    overwrite: bool,
-) -> Path:
-    output_slide_dir = patch_root / slide_id / "images"
-    if _has_existing_tiles(output_slide_dir) and not overwrite:
-        logging.info("Skipping patch export for %s (tiles already exist).", slide_id)
-        return output_slide_dir
-
-    output_slide_dir.mkdir(parents=True, exist_ok=True)
-    for tile in wsi.iter.tile_images(tiles_key):
-        arr = tile_image_to_array(tile)
-        x, y = extract_tile_xy(tile)
-        out_name = f"{slide_id}_X0Y0_{x:06d}_{y:06d}.png"
-        Image.fromarray(arr).save(output_slide_dir / out_name)
-    return output_slide_dir
-
-
-def _export_tiles_preview(
-    wsi: Any,
-    tiles_key: str,
-    tiles_dir: Path,
-    slide_id: str,
-    overwrite: bool,
-) -> Path:
-    tiles_dir.mkdir(parents=True, exist_ok=True)
-    preview_dir = tiles_dir / slide_id
-    if _has_existing_tiles(preview_dir) and not overwrite:
-        logging.info("Skipping preview export for %s (tiles already exist).", slide_id)
-        return preview_dir
-
-    preview_dir.mkdir(parents=True, exist_ok=True)
-    for idx, tile in enumerate(wsi.iter.tile_images(tiles_key)):
-        arr = tile_image_to_array(tile)
-        tile_id = getattr(tile, "id", idx)
-        Image.fromarray(arr).save(preview_dir / f"tile_{tile_id}.png")
-    return preview_dir
-
-
 def process_slide(
     sample: dict[str, Any],
     level: int,
     tiles_key: str,
     tile_size: int,
-    output_dir: Path,
     cache_dir: Path,
     overwrite: bool = False,
-    save_tiles: bool = False,
-    export_patches: bool = True,
-    tiles_dir: Optional[Path] = None,
 ) -> Path:
     slide_id = str(sample["slide_id"])
     slide_image_path = Path(sample["image"])
@@ -143,11 +92,6 @@ def process_slide(
             _tile_tissues(wsi, tiles_key, tile_size, level, used_mpp)
             wsi.write(str(cache_path))
 
-        if export_patches:
-            _export_patch_layout(wsi, tiles_key, output_dir, slide_id, overwrite)
-        if save_tiles:
-            preview_root = tiles_dir if tiles_dir is not None else output_dir / "tiles_preview"
-            _export_tiles_preview(wsi, tiles_key, preview_root, slide_id, overwrite)
     finally:
         if wsi is not None:
             wsi.close()
@@ -195,27 +139,18 @@ def build_slide_samples(
 
 def process_dataset(
     samples: Iterable[dict[str, Any]],
-    output_dir: Path,
     cache_dir: Path,
     level: int,
     tile_size: int,
     overwrite: bool = False,
-    save_tiles: bool = False,
-    export_patches: bool = True,
     tiles_key: str = "tiles",
-    tiles_dir: Optional[Path] = None,
 ) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
     for sample in tqdm.tqdm(samples, desc="Processing slides"):
         process_slide(
             sample=sample,
             level=level,
             tile_size=tile_size,
-            output_dir=output_dir,
             cache_dir=cache_dir,
             tiles_key=tiles_key,
             overwrite=overwrite,
-            save_tiles=save_tiles,
-            export_patches=export_patches,
-            tiles_dir=tiles_dir,
         )

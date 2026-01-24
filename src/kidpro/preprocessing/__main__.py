@@ -10,9 +10,24 @@ from .create_tiles_dataset import build_slide_samples, process_dataset
 log = logging.getLogger(__name__)
 
 
+def _configure_logging(log_path: Path, level: str) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=str(log_path),
+        filemode="a",
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+
 @hydra.main(version_base=None, config_path="../conf", config_name="preprocess")
 def main(hcfg: DictConfig) -> None:
     cfg = PREPROCESS_CONFIG(hcfg)
+
+    log_path = Path(cfg.logging.log_file)
+    if not log_path.is_absolute():
+        log_path = Path.cwd() / log_path
+    _configure_logging(log_path, cfg.logging.level)
 
     paths = cfg.paths
     slide_csv = Path(paths.label_csv)
@@ -25,22 +40,16 @@ def main(hcfg: DictConfig) -> None:
     )
 
     preprocess = cfg.preprocess
-    output_dir = Path(paths.root_dir)
     cache_dir = Path(paths.cache_dir)
-    tiles_dir = paths.tiles_dir
     process_dataset(
         samples=slide_samples,
-        output_dir=output_dir,
         cache_dir=cache_dir,
         level=preprocess.level,
         tile_size=cfg.data.patch_size,
         overwrite=preprocess.overwrite,
-        save_tiles=preprocess.save_tiles,
-        export_patches=preprocess.export_patches,
         tiles_key=preprocess.tiles_key,
-        tiles_dir=tiles_dir,
     )
-    log.info("Preprocessing complete. Cache: %s PatchRoot: %s", cache_dir, output_dir)
+    log.info("Preprocessing complete. Cache: %s", cache_dir)
 
 
 if __name__ == "__main__":

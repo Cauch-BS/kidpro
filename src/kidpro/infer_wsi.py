@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -60,12 +59,6 @@ def _resolve_cache_dir(cfg: AppCfg, infer_cfg: InferenceCfg) -> Path:
   return Path(cfg.run_dir or Path.cwd()) / "wsidata_cache"
 
 
-def _resolve_patch_dir(cfg: AppCfg, infer_cfg: InferenceCfg) -> Path:
-  if infer_cfg.patch_dir:
-    return Path(infer_cfg.patch_dir)
-  return Path(cfg.run_dir or Path.cwd()) / "tiles"
-
-
 def _ensure_cache(
   cfg: AppCfg,
   infer_cfg: InferenceCfg,
@@ -78,19 +71,13 @@ def _ensure_cache(
   if cache_path.exists() and not infer_cfg.preprocess.overwrite:
     return cache_path
 
-  patch_dir = _resolve_patch_dir(cfg, infer_cfg)
-  tiles_dir = patch_dir / "preview" if infer_cfg.preprocess.save_tiles else None
   process_slide(
     sample={"slide_id": slide_id, "image": str(infer_cfg.wsi_path)},
     level=infer_cfg.preprocess.level,
     tile_size=tile_size,
-    output_dir=patch_dir,
     cache_dir=cache_dir,
     tiles_key=infer_cfg.preprocess.tiles_key,
     overwrite=infer_cfg.preprocess.overwrite,
-    save_tiles=infer_cfg.preprocess.save_tiles,
-    export_patches=infer_cfg.preprocess.export_patches,
-    tiles_dir=tiles_dir,
   )
   return cache_path
 
@@ -167,7 +154,6 @@ def run_wsi_inference(cfg: AppCfg, rr: RuntimeResolved) -> Dict[str, Any]:
   probs = torch.softmax(logits, dim=1).squeeze(0).tolist()
   pred = int(torch.argmax(logits, dim=1).item())
 
-  patch_dir = _resolve_patch_dir(cfg, infer_cfg)
   result = {
     "slide_id": slide_id,
     "wsi_path": str(infer_cfg.wsi_path),
@@ -177,18 +163,12 @@ def run_wsi_inference(cfg: AppCfg, rr: RuntimeResolved) -> Dict[str, Any]:
     "weights_path": str(ckpt_path),
     "weights_source": source,
     "tiles_cache": str(cache_path),
-    "patch_dir": str(patch_dir / slide_id / "images")
-    if infer_cfg.preprocess.export_patches
-    else None,
   }
 
   out_path = output_dir / infer_cfg.output_json
   with open(out_path, "w") as f:
     json.dump(result, f, indent=2)
   log.info("Inference complete. Output: %s", out_path)
-
-  if infer_cfg.cleanup_tiles and infer_cfg.preprocess.export_patches:
-    shutil.rmtree(patch_dir / slide_id, ignore_errors=True)
 
   return result
 

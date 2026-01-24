@@ -209,12 +209,11 @@ class PreprocessDataCfg(BaseModel):
 
 
 class PreprocessPathsCfg(BaseModel):
-  root_dir: Path
+  run_root: Path
   cache_dir: Path
   label_csv: Path
   wsi_dir: Optional[Path] = None
   wsi_ext: str = ".svs"
-  tiles_dir: Optional[Path] = None
 
 
 class PreprocessCfg(BaseModel):
@@ -224,8 +223,6 @@ class PreprocessCfg(BaseModel):
   foreground_threshold: Optional[float] = None
   hsv_s_threshold: Optional[float] = 0.05
   overwrite: bool = False
-  save_tiles: bool = False
-  export_patches: bool = True
   tiles_key: str = "tiles"
 
   @model_validator(mode="after")
@@ -241,6 +238,11 @@ class PreprocessCfg(BaseModel):
     if not self.tiles_key:
       raise ValueError("preprocess.tiles_key must be non-empty.")
     return self
+
+
+class PreprocessLoggingCfg(BaseModel):
+  level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+  log_file: str = "preprocess.log"
 
 
 class EarlyStoppingCfg(BaseModel):
@@ -374,6 +376,7 @@ class PreprocessAppCfg(BaseModel):
   paths: PreprocessPathsCfg
   data: PreprocessDataCfg
   preprocess: PreprocessCfg
+  logging: PreprocessLoggingCfg = Field(default_factory=PreprocessLoggingCfg)
 
 
 # -------------------------
