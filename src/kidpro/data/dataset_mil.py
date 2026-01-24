@@ -8,12 +8,7 @@ import torch
 from torch.utils.data import Dataset
 
 from ..config.schema import AppCfg
-from ..utils.wsidata import (
-    extract_tile_xy,
-    open_wsidata,
-    reservoir_sample,
-    tile_image_to_array,
-)
+from ..utils.wsidata import extract_tile_xy, open_wsidata, tile_image_to_array
 
 
 class MILDataset(Dataset):
@@ -25,8 +20,6 @@ class MILDataset(Dataset):
     self.cache_root = Path(cfg.dataset.paths.cache_dir) if cfg.dataset.paths.cache_dir else None
     self.tiles_key = cfg.dataset.paths.tiles_key
     self.transform = transform
-    self.max_patches = cfg.dataset.task.max_patches
-    self.sample_mode = cfg.dataset.task.sample_mode
     self.wsi_dir = Path(cfg.dataset.paths.wsi_dir) if cfg.dataset.paths.wsi_dir else None
     self.wsi_ext = cfg.dataset.paths.wsi_ext or ".svs"
     if not self.wsi_ext.startswith("."):
@@ -75,13 +68,11 @@ class MILDataset(Dataset):
     wsi = open_wsidata(str(slide_path), cache_path)
     try:
       tiles = wsi.iter.tile_images(self.tiles_key)
-      selected_tiles = reservoir_sample(tiles, self.max_patches, self.sample_mode)
-      if not selected_tiles:
-        raise RuntimeError(f"No tiles available for slide: {slide_name}")
-
       imgs = []
       coords = []
-      for tile in selected_tiles:
+      found_tile = False
+      for tile in tiles:
+        found_tile = True
         arr = tile_image_to_array(tile)
         if self.transform:
           img = self.transform(image=arr)["image"]
@@ -92,6 +83,8 @@ class MILDataset(Dataset):
         tile_x, tile_y = extract_tile_xy(tile)
         coords.append([tile_x, tile_y])
 
+      if not found_tile:
+        raise RuntimeError(f"No tiles available for slide: {slide_name}")
       if not imgs:
         raise RuntimeError(f"All tiles failed to load for slide: {slide_name}")
     finally:

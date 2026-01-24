@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 import numpy as np
 
@@ -53,30 +53,3 @@ def extract_tile_xy(tile: object) -> tuple[int, int]:
         if "x" in meta and "y" in meta:
             return int(meta["x"]), int(meta["y"])
     raise RuntimeError("Unable to extract tile coordinates from wsidata tile metadata.")
-
-
-def reservoir_sample(
-    tiles: Iterable[object],
-    max_items: Optional[int],
-    sample_mode: str,
-) -> list[object]:
-    if max_items is None:
-        return list(tiles)
-
-    selected: list[object] = []
-    if sample_mode == "first":
-        for idx, tile in enumerate(tiles):
-            if idx >= max_items:
-                break
-            selected.append(tile)
-        return selected
-
-    # Reservoir sampling for random selection without loading all tiles
-    for idx, tile in enumerate(tiles):
-        if idx < max_items:
-            selected.append(tile)
-            continue
-        j = np.random.randint(0, idx + 1)
-        if j < max_items:
-            selected[j] = tile
-    return selected

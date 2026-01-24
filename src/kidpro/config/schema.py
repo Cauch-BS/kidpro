@@ -50,8 +50,6 @@ class MILTaskCfg(BaseModel):
     type: Literal["mil"]
     num_classes: int = 2
     top_k: int = 10
-    max_patches: int = 300
-    sample_mode: Literal["random", "first"] = "random"
 
     @model_validator(mode="after")
     def _validate(self) -> "MILTaskCfg":
