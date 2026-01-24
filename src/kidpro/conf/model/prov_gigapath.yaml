@@ -16,7 +16,7 @@ pretrained: false
 # source: local | hf_cache
 weights:
   source: local
-  local_path: /home/khdp-user/workspace/huggingface_cache/prov_gigapath/model.pt
+  local_path: /home/khdp-user/workspace/huggingface_cache/prov_gigapath/pytorch_model.bin
   hf_cache_path: /home/khdp-user/workspace/huggingface_cache
 
 # --- LORA knobs ---
