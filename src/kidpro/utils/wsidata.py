@@ -14,15 +14,25 @@ except ImportError as exc:
     ) from exc
 
 
-def open_wsidata(filepath: str) -> WSIData:
-    path = Path(filepath)
-    if not path.exists():
-        raise FileNotFoundError(f"WSI file not found: {filepath}")
-    elif not path.is_file():
-        raise FileNotFoundError(f"WSI file is not a file: {filepath}")
-    else:
-        wsi: WSIData = open_wsi(path)
+def open_wsidata(slide_path: str, store_path: Optional[Path] = None) -> WSIData:
+    slide = Path(slide_path)
+    if not slide.exists():
+        raise FileNotFoundError(f"WSI file not found: {slide_path}")
+    if not slide.is_file():
+        raise FileNotFoundError(f"WSI file is not a file: {slide_path}")
+
+    if store_path is None:
+        wsi: WSIData = open_wsi(slide)
         return wsi
+
+    store = Path(store_path)
+    if not store.exists():
+        raise FileNotFoundError(f"WSI store not found: {store_path}")
+    if not store.is_dir():
+        raise FileNotFoundError(f"WSI store is not a directory: {store_path}")
+
+    wsi = open_wsi(slide, store=str(store))
+    return wsi
 
 
 def tile_image_to_array(tile: object) -> np.ndarray:

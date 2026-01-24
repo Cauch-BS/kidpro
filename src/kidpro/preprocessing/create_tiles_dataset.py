@@ -80,10 +80,10 @@ def process_slide(
     try:
         if cache_path.exists() and not overwrite:
             logging.info("Using existing wsidata cache for %s", slide_id)
-            wsi = open_wsidata(str(cache_path))
+            wsi = open_wsidata(str(slide_image_path), cache_path)
         else:
             logging.info("Creating wsidata cache for %s from %s", slide_id, slide_image_path)
-            wsi = open_wsidata(str(slide_image_path))
+            wsi = open_wsidata(str(slide_image_path), cache_path)
             zs.pp.find_tissues(wsi)
             act_mpp = _resolve_mpp(slide_image_path, level) or 0.5
             used_mpp = max(act_mpp, 0.5)

@@ -83,11 +83,12 @@ def _ensure_cache(
 
 
 def _load_tiles_from_cache(
+  slide_path: Path,
   cache_path: Path,
   tiles_key: str,
   transform: Optional[Callable] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-  wsi = open_wsidata(str(cache_path))
+  wsi = open_wsidata(str(slide_path), cache_path)
   try:
     imgs: list[torch.Tensor] = []
     coords: list[list[int]] = []
@@ -131,7 +132,8 @@ def run_wsi_inference(cfg: AppCfg, rr: RuntimeResolved) -> Dict[str, Any]:
 
   _, val_tf = get_transforms(cfg)
   x, coords = _load_tiles_from_cache(
-    cache_path,
+    slide_path=Path(infer_cfg.wsi_path),
+    cache_path=cache_path,
     tiles_key=infer_cfg.preprocess.tiles_key,
     transform=val_tf,
   )

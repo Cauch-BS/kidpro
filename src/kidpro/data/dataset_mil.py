@@ -27,6 +27,10 @@ class MILDataset(Dataset):
     self.transform = transform
     self.max_patches = cfg.dataset.task.max_patches
     self.sample_mode = cfg.dataset.task.sample_mode
+    self.wsi_dir = Path(cfg.dataset.paths.wsi_dir) if cfg.dataset.paths.wsi_dir else None
+    self.wsi_ext = cfg.dataset.paths.wsi_ext or ".svs"
+    if not self.wsi_ext.startswith("."):
+      self.wsi_ext = f".{self.wsi_ext}"
 
     self._cache_paths: dict[str, Path] = {}
 
@@ -48,6 +52,11 @@ class MILDataset(Dataset):
     self._cache_paths[slide_name] = cache_path
     return cache_path
 
+  def _resolve_slide_path(self, slide_name: str) -> Path:
+    if self.wsi_dir is None:
+      raise RuntimeError("dataset.paths.wsi_dir is required for MIL wsidata loading.")
+    return self.wsi_dir / f"{slide_name}{self.wsi_ext}"
+
   def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, str]:
     row = self.df.iloc[idx]
     slide_name = str(row["SlideName"])
@@ -62,7 +71,8 @@ class MILDataset(Dataset):
     if not cache_path.exists():
       raise RuntimeError(f"Missing wsidata cache for slide {slide_name}: {cache_path}")
 
-    wsi = open_wsidata(str(cache_path))
+    slide_path = self._resolve_slide_path(slide_name)
+    wsi = open_wsidata(str(slide_path), cache_path)
     try:
       tiles = wsi.iter.tile_images(self.tiles_key)
       selected_tiles = reservoir_sample(tiles, self.max_patches, self.sample_mode)
