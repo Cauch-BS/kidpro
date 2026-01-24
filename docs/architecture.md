@@ -3,14 +3,14 @@
 KidPro has two training paths that share the same WSI inputs:
 
 - Patch segmentation path: XML + SVS -> patches + masks -> tile model training.
-- MIL path: WSI + labels -> tiled bags -> slide-level classifier training.
+- MIL path: WSI + labels -> wsidata cache -> slide-level classifier training.
 
 ```mermaid
 flowchart TD
-  WSI[WSI_Slides] --> Preprocess[Preprocess_Tiles]
+  WSI[WSI_Slides] --> Preprocess[Preprocess_WSIData]
   Labels[Label_CSV] --> Preprocess
-  Preprocess --> MILTiles[MIL_Tiles]
-  MILTiles --> TrainWSI[Train_WSI_MIL]
+  Preprocess --> WSIDataCache[WSIData_Zarr_Cache]
+  WSIDataCache --> TrainWSI[Train_WSI_MIL]
   TrainWSI --> WSIModel[WSI_Model_Checkpoint]
 
   XML[XML_Annotations] --> PatchGen[Patch_Generation]
@@ -21,6 +21,7 @@ flowchart TD
   TileModel --> TrainWSI
 
   WSI --> Inference[WSI_Inference]
+  WSIDataCache --> Inference
   WSIModel --> Inference
   Inference --> Prediction[Prediction_JSON]
 ```
@@ -28,9 +29,9 @@ flowchart TD
 Key components:
 
 - `kidpro.patch`: generates image+mask patches from annotations.
-- `kidpro.preprocessing`: creates MIL tiles from WSIs.
+- `kidpro.preprocessing`: creates wsidata cache and optional patches from WSIs.
 - `kidpro.train_tile`: trains segmentation on patches.
-- `kidpro.train_wsi`: trains WSI MIL classifier on tiles.
-- `kidpro.infer_wsi`: tiles a WSI (if needed) and runs classification.
+- `kidpro.train_wsi`: trains WSI MIL classifier on wsidata tiles.
+- `kidpro.infer_wsi`: builds/reuses wsidata cache and runs classification.
 
 See also: `overview.md`, `training.md`, `inference.md`.

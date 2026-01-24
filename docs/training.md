@@ -29,7 +29,9 @@ Outputs:
 Entrypoint: `python -m kidpro.train_wsi`  
 Config: `kidpro/conf/config_wsi.yaml` (defaults to `dataset=wsi`)
 
-Important: WSI training requires the tile encoder to be frozen:
+Important: WSI training reads tiles from wsidata caches created by
+`kidpro.preprocessing`. Patch export is optional for inspection only.
+WSI training also requires the tile encoder to be frozen:
 
 ```bash
 python -m kidpro.train_wsi model.freeze_backbone=true

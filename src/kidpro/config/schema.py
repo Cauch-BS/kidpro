@@ -21,6 +21,10 @@ class PathsCfg(BaseModel):
 
   # MIL-only
   label_csv: Optional[Path] = None
+  cache_dir: Optional[Path] = None
+  tiles_key: str = "tiles"
+  wsi_dir: Optional[Path] = None
+  wsi_ext: str = ".svs"
 
 
 # -------------------------
@@ -206,9 +210,11 @@ class PreprocessDataCfg(BaseModel):
 
 class PreprocessPathsCfg(BaseModel):
   root_dir: Path
+  cache_dir: Path
   label_csv: Path
   wsi_dir: Optional[Path] = None
   wsi_ext: str = ".svs"
+  tiles_dir: Optional[Path] = None
 
 
 class PreprocessCfg(BaseModel):
@@ -218,6 +224,9 @@ class PreprocessCfg(BaseModel):
   foreground_threshold: Optional[float] = None
   hsv_s_threshold: Optional[float] = 0.05
   overwrite: bool = False
+  save_tiles: bool = False
+  export_patches: bool = True
+  tiles_key: str = "tiles"
 
   @model_validator(mode="after")
   def _validate(self) -> "PreprocessCfg":
@@ -229,6 +238,8 @@ class PreprocessCfg(BaseModel):
       raise ValueError("preprocess.occupancy_threshold must be in [0, 1].")
     if self.hsv_s_threshold is not None and not (0.0 <= self.hsv_s_threshold <= 1.0):
       raise ValueError("preprocess.hsv_s_threshold must be in [0, 1] or None.")
+    if not self.tiles_key:
+      raise ValueError("preprocess.tiles_key must be non-empty.")
     return self
 
 
@@ -284,7 +295,8 @@ class ExportCfg(BaseModel):
 class InferenceCfg(BaseModel):
   wsi_path: Path
   slide_id: Optional[str] = None
-  tiles_dir: Optional[Path] = None
+  cache_dir: Optional[Path] = None
+  patch_dir: Optional[Path] = None
   output_dir: Optional[Path] = None
   output_json: str = "prediction.json"
   tile_size: Optional[int] = None

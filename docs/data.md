@@ -37,10 +37,11 @@ The `layer_ids` list controls which mask layers are produced.
 
 Splits are generated using the ratios in `kidpro/conf/dataset/*.yaml`.
 
-## MIL preprocessing (WSI to tiles)
+## MIL preprocessing (WSI to wsidata cache + patches)
 
-Preprocessing converts WSIs into a MIL tile layout expected by `MILDataset`.
-Default config: `kidpro/conf/preprocess.yaml`.
+Preprocessing builds wsidata caches for each slide and (optionally) exports
+patch tiles into the MIL layout expected by `MILDataset`. Default config:
+`kidpro/conf/preprocess.yaml`.
 
 Command:
 
@@ -59,8 +60,11 @@ Output layout:
 
 ```text
 <root_dir>/<SlideName>/images/<SlideName>_X0Y0_XXXXXX_YYYYYY.png
+<cache_dir>/<SlideName>.zarr
 ```
 
-Tile filenames encode top-left coordinates in the WSI.
+Tile filenames encode top-left coordinates in the WSI. The wsidata cache is
+used directly by MIL training/inference; patch export is for optional inspection
+or compatibility.
 
 See also: `configuration.md`, `training.md`.

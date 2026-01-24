@@ -33,6 +33,8 @@ python -m kidpro.train_tile dataset=glom
 python -m kidpro.train_tile model=virchow2 train.batch_size=8
 python -m kidpro.train_wsi dataset.paths.label_csv=/path/to/labels.csv
 python -m kidpro.infer_wsi inference.wsi_path=/path/to/slide.svs
+python -m kidpro.infer_wsi inference.cache_dir=/path/to/wsidata_cache
+python -m kidpro.preprocessing preprocess.export_patches=false
 ```
 
 Run directories:

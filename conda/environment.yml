@@ -12,4 +12,19 @@ dependencies:
   - matplotlib
   - ipykernel
   - mlflow
-prefix: /opt/homebrew/Caskroom/miniconda/base/envs/kidpro
+  - numpy
+  - pandas
+  - openslide-python
+  - monai
+  - scikit-image
+  - albumentations
+  - opencv-python
+  - einops
+  - fairscale
+  - segmentation-models-pytorch
+  - timm
+  - peft
+  - scikit-learn
+  - ipykernel
+  - hydra-core
+  - omegaconf

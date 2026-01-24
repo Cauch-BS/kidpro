@@ -13,7 +13,7 @@ WSI MIL classification for renal biopsy analysis.
 
 ## Workflow (Default)
 
-1) Run preprocessing to generate tiles for WSI training.
+1) Run preprocessing to build wsidata cache and (optionally) export patches.
 2) Run `train_tile` to finetune the tile foundation model on glomerulus segmentation (PAS).
 3) Freeze the tile model weights and run `train_wsi` using `best_model.pt` from `train_tile`.
 
@@ -39,10 +39,11 @@ Optional: generate alternative patch targets when needed:
 - IFTA: `python -m kidpro.patch patch=ifta`
 - Inflammation: `python -m kidpro.patch patch=inflam`
 
-## MIL Preprocessing (WSI → tiles)
+## MIL Preprocessing (WSI → wsidata cache + patches)
 
-Offline preprocessing writes tiles into the MIL dataset layout expected by `MILDataset`:
-`<root_dir>/<SlideName>/images/<SlideName>_X0Y0_XXXXXX_YYYYYY.png`.
+Offline preprocessing writes wsidata caches and exports patches into the MIL layout:
+`<root_dir>/<SlideName>/images/<SlideName>_X0Y0_XXXXXX_YYYYYY.png` plus
+`<cache_dir>/<SlideName>.zarr` (used by MIL training/inference).
 
 Default run (uses `kidpro/conf/preprocess.yaml`):
 
@@ -57,8 +58,8 @@ Inputs:
 Common overrides:
 
 - `python -m kidpro.preprocessing preprocess.level=1`
-- `python -m kidpro.preprocessing preprocess.occupancy_threshold=0.2`
 - `python -m kidpro.preprocessing data.patch_size=256`
+- `python -m kidpro.preprocessing preprocess.export_patches=false`
 
 ## Training (Hydra)
 
@@ -95,13 +96,16 @@ Run WSI inference with the default config (`kidpro/conf/infer_wsi.yaml`):
 Common overrides:
 
 - `python -m kidpro.infer_wsi inference.output_dir=/path/to/output`
-- `python -m kidpro.infer_wsi inference.tiles_dir=/path/to/tiles`
+- `python -m kidpro.infer_wsi inference.cache_dir=/path/to/wsidata_cache`
+- `python -m kidpro.infer_wsi inference.patch_dir=/path/to/tiles`
 - `python -m kidpro.infer_wsi inference.preprocess.level=1`
 - `python -m kidpro.infer_wsi mlflow.tracking_uri=http://localhost:5000`
 
 Outputs:
 
 - Prediction JSON at `inference.output_dir/inference.output_json`
+- WSIData cache at `inference.cache_dir/<slide_id>.zarr`
+- Optional patches at `inference.patch_dir/<slide_id>/images` (if export enabled)
 
 ## 🏗️ Architecture
 

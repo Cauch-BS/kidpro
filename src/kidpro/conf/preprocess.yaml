@@ -5,6 +5,8 @@ defaults:
 paths:
   out_home: /home/khdp-user/workspace/output
   root_dir: /home/khdp-user/workspace/output/MIL_patch
+  cache_dir: /home/khdp-user/workspace/output/MIL_cache
+  tiles_dir: /home/khdp-user/workspace/output/MIL_tiles
   label_csv: /home/khdp-user/workspace/dataset/CSV/GT_label.csv
   wsi_dir: /home/khdp-user/workspace/dataset/Slide
   wsi_ext: .svs
@@ -21,3 +23,6 @@ preprocess:
   foreground_threshold: null
   hsv_s_threshold: 0.05
   overwrite: false
+  save_tiles: false
+  export_patches: true
+  tiles_key: tiles

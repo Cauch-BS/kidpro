@@ -20,7 +20,7 @@ Quickstart (happy path):
    `conda env create -f conda/environment.yml && conda activate kidpro`
 2. Generate patches (segmentation dataset):
    `python -m kidpro.patch`
-3. Preprocess for MIL:
+3. Preprocess for MIL (build wsidata cache + optional patches):
    `python -m kidpro.preprocessing`
 4. Train tile segmentation:
    `python -m kidpro.train_tile`

@@ -5,7 +5,7 @@ import hydra
 from omegaconf import DictConfig
 
 from ..config.load import PREPROCESS_CONFIG
-from .data.create_tiles_dataset import build_slide_samples, process_dataset
+from .create_tiles_dataset import build_slide_samples, process_dataset
 
 log = logging.getLogger(__name__)
 
@@ -26,18 +26,21 @@ def main(hcfg: DictConfig) -> None:
 
     preprocess = cfg.preprocess
     output_dir = Path(paths.root_dir)
+    cache_dir = Path(paths.cache_dir)
+    tiles_dir = paths.tiles_dir
     process_dataset(
         samples=slide_samples,
         output_dir=output_dir,
+        cache_dir=cache_dir,
         level=preprocess.level,
         tile_size=cfg.data.patch_size,
-        margin=preprocess.margin,
-        foreground_threshold=preprocess.foreground_threshold,
-        occupancy_threshold=preprocess.occupancy_threshold,
-        hsv_s_threshold=getattr(preprocess, "hsv_s_threshold", None),
         overwrite=preprocess.overwrite,
+        save_tiles=preprocess.save_tiles,
+        export_patches=preprocess.export_patches,
+        tiles_key=preprocess.tiles_key,
+        tiles_dir=tiles_dir,
     )
-    log.info("Preprocessing complete. Output: %s", output_dir)
+    log.info("Preprocessing complete. Cache: %s PatchRoot: %s", cache_dir, output_dir)
 
 
 if __name__ == "__main__":

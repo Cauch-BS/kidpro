@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
-import cv2
 import hydra
 import torch
 from omegaconf import DictConfig
@@ -17,7 +15,8 @@ from .config.schema import AppCfg, InferenceCfg
 from .data.transform import get_transforms
 from .modeling.factory_wsi import build_model_mil
 from .modeling.sources import load_state_dict_generic
-from .preprocessing.data.create_tiles_dataset import process_slide
+from .preprocessing.create_tiles_dataset import process_slide
+from .utils.wsidata import extract_tile_xy, open_wsidata, tile_image_to_array
 
 log = logging.getLogger(__name__)
 
@@ -53,63 +52,77 @@ def _derive_slide_id(infer_cfg: InferenceCfg) -> str:
   return Path(infer_cfg.wsi_path).stem
 
 
-def _generate_tiles(
+def _resolve_cache_dir(cfg: AppCfg, infer_cfg: InferenceCfg) -> Path:
+  if infer_cfg.cache_dir:
+    return Path(infer_cfg.cache_dir)
+  if cfg.dataset.paths.cache_dir:
+    return Path(cfg.dataset.paths.cache_dir)
+  return Path(cfg.run_dir or Path.cwd()) / "wsidata_cache"
+
+
+def _resolve_patch_dir(cfg: AppCfg, infer_cfg: InferenceCfg) -> Path:
+  if infer_cfg.patch_dir:
+    return Path(infer_cfg.patch_dir)
+  return Path(cfg.run_dir or Path.cwd()) / "tiles"
+
+
+def _ensure_cache(
+  cfg: AppCfg,
   infer_cfg: InferenceCfg,
   slide_id: str,
   tile_size: int,
 ) -> Path:
-  tiles_root = Path(infer_cfg.tiles_dir) if infer_cfg.tiles_dir else Path.cwd() / "tiles"
-  tiles_root.mkdir(parents=True, exist_ok=True)
+  cache_dir = _resolve_cache_dir(cfg, infer_cfg)
+  cache_dir.mkdir(parents=True, exist_ok=True)
+  cache_path = cache_dir / f"{slide_id}.zarr"
+  if cache_path.exists() and not infer_cfg.preprocess.overwrite:
+    return cache_path
 
+  patch_dir = _resolve_patch_dir(cfg, infer_cfg)
+  tiles_dir = patch_dir / "preview" if infer_cfg.preprocess.save_tiles else None
   process_slide(
     sample={"slide_id": slide_id, "image": str(infer_cfg.wsi_path)},
     level=infer_cfg.preprocess.level,
-    margin=infer_cfg.preprocess.margin,
     tile_size=tile_size,
-    foreground_threshold=infer_cfg.preprocess.foreground_threshold,
-    occupancy_threshold=infer_cfg.preprocess.occupancy_threshold,
-    hsv_s_threshold=infer_cfg.preprocess.hsv_s_threshold,
-    output_dir=tiles_root,
+    output_dir=patch_dir,
+    cache_dir=cache_dir,
+    tiles_key=infer_cfg.preprocess.tiles_key,
     overwrite=infer_cfg.preprocess.overwrite,
+    save_tiles=infer_cfg.preprocess.save_tiles,
+    export_patches=infer_cfg.preprocess.export_patches,
+    tiles_dir=tiles_dir,
   )
+  return cache_path
 
-  return tiles_root / slide_id / "images"
 
-
-def _load_slide_patches(
-  slide_images_dir: Path,
+def _load_tiles_from_cache(
+  cache_path: Path,
+  tiles_key: str,
   transform: Optional[Callable] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-  patch_paths = sorted(slide_images_dir.glob("*.png"))
-  if not patch_paths:
-    raise RuntimeError(f"No patches found under {slide_images_dir}")
+  wsi = open_wsidata(str(cache_path))
+  try:
+    imgs: list[torch.Tensor] = []
+    coords: list[list[int]] = []
+    for tile in wsi.iter.tile_images(tiles_key):
+      arr = tile_image_to_array(tile)
+      if transform:
+        img_t = transform(image=arr)["image"]
+      else:
+        img_t = torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0  # type: ignore
 
-  coord_re = re.compile(r"_X0Y0_(\d{6})_(\d{6})\.png$")
-  imgs: list[torch.Tensor] = []
-  coords: list[list[int]] = []
+      if not isinstance(img_t, torch.Tensor):
+        img_t = torch.from_numpy(img_t)
+      imgs.append(img_t)
 
-  for p in patch_paths:
-    img = cv2.imread(str(p))
-    if img is None:
-      continue
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+      tile_x, tile_y = extract_tile_xy(tile)
+      coords.append([tile_x, tile_y])
 
-    if transform:
-      img_t = transform(image=img)["image"]
-    else:
-      img_t = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0  # type: ignore
-
-    if not isinstance(img_t, torch.Tensor):
-      img_t = torch.from_numpy(img_t)
-    imgs.append(img_t)
-
-    match = coord_re.search(p.name)
-    if not match:
-      raise RuntimeError(f"Missing coordinate suffix in patch filename: {p.name}")
-    coords.append([int(match.group(1)), int(match.group(2))])
-
-  if not imgs:
-    raise RuntimeError(f"All patches failed to load for slide dir: {slide_images_dir}")
+    if not imgs:
+      raise RuntimeError(f"No tiles found in wsidata cache: {cache_path}")
+  finally:
+    if hasattr(wsi, "close"):
+      wsi.close()
 
   x = torch.stack(imgs, dim=0)
   xy = torch.tensor(coords, dtype=torch.float32)
@@ -127,10 +140,14 @@ def run_wsi_inference(cfg: AppCfg, rr: RuntimeResolved) -> Dict[str, Any]:
   output_dir.mkdir(parents=True, exist_ok=True)
 
   tile_size = infer_cfg.tile_size or cfg.dataset.data.patch_size
-  slide_images_dir = _generate_tiles(infer_cfg, slide_id=slide_id, tile_size=tile_size)
+  cache_path = _ensure_cache(cfg, infer_cfg, slide_id=slide_id, tile_size=tile_size)
 
   _, val_tf = get_transforms(cfg)
-  x, coords = _load_slide_patches(slide_images_dir, transform=val_tf)
+  x, coords = _load_tiles_from_cache(
+    cache_path,
+    tiles_key=infer_cfg.preprocess.tiles_key,
+    transform=val_tf,
+  )
 
   model = build_model_mil(cfg)
   ckpt_path, source = _resolve_wsi_weights(cfg, infer_cfg)
@@ -150,6 +167,7 @@ def run_wsi_inference(cfg: AppCfg, rr: RuntimeResolved) -> Dict[str, Any]:
   probs = torch.softmax(logits, dim=1).squeeze(0).tolist()
   pred = int(torch.argmax(logits, dim=1).item())
 
+  patch_dir = _resolve_patch_dir(cfg, infer_cfg)
   result = {
     "slide_id": slide_id,
     "wsi_path": str(infer_cfg.wsi_path),
@@ -158,7 +176,10 @@ def run_wsi_inference(cfg: AppCfg, rr: RuntimeResolved) -> Dict[str, Any]:
     "predicted_class": pred,
     "weights_path": str(ckpt_path),
     "weights_source": source,
-    "tiles_dir": str(slide_images_dir),
+    "tiles_cache": str(cache_path),
+    "patch_dir": str(patch_dir / slide_id / "images")
+    if infer_cfg.preprocess.export_patches
+    else None,
   }
 
   out_path = output_dir / infer_cfg.output_json
@@ -166,8 +187,8 @@ def run_wsi_inference(cfg: AppCfg, rr: RuntimeResolved) -> Dict[str, Any]:
     json.dump(result, f, indent=2)
   log.info("Inference complete. Output: %s", out_path)
 
-  if infer_cfg.cleanup_tiles:
-    shutil.rmtree(slide_images_dir.parent, ignore_errors=True)
+  if infer_cfg.cleanup_tiles and infer_cfg.preprocess.export_patches:
+    shutil.rmtree(patch_dir / slide_id, ignore_errors=True)
 
   return result
 
