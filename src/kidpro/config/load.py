@@ -38,10 +38,10 @@ def CONFIG(hcfg: DictConfig, run_dir: Path) -> Tuple[AppCfg, RuntimeResolved]:
   cfg_dict["run_dir"] = str(run_dir) # type: ignore
 
   cfg = AppCfg.model_validate(cfg_dict)
-  rr = resolve_device(cfg.runtime.device)
+  rr = resolve_device(cfg.core.runtime.device)
 
-  torch.backends.cudnn.benchmark = cfg.runtime.cudnn_benchmark
-  torch.backends.cudnn.deterministic = cfg.runtime.cudnn_deterministic
+  torch.backends.cudnn.benchmark = cfg.core.runtime.cudnn_benchmark
+  torch.backends.cudnn.deterministic = cfg.core.runtime.cudnn_deterministic
 
   seed_everything(cfg.train.seed, cuda=rr.cuda_available)
   return cfg, rr
@@ -82,14 +82,14 @@ def _git_info() -> Dict[str, Any]:
 def CONFIG_EXPORT(cfg: AppCfg, rr: RuntimeResolved) -> None:
   run_dir = Path(cfg.run_dir) if cfg.run_dir else Path.cwd()
 
-  if cfg.export.save_resolved_config:
+  if cfg.core.export.save_resolved_config:
     resolved = cfg.model_dump(mode="python")
     OmegaConf.save(
       config=OmegaConf.create(resolved),
-      f=str(run_dir / cfg.export.resolved_config_name),
+      f=str(run_dir / cfg.core.export.resolved_config_name),
     )
 
-  if cfg.export.save_env_json:
+  if cfg.core.export.save_env_json:
     task = cfg.dataset.task
     data = cfg.dataset.data
     paths = cfg.dataset.paths
@@ -141,7 +141,7 @@ def CONFIG_EXPORT(cfg: AppCfg, rr: RuntimeResolved) -> None:
     if getattr(paths, "label_csv", None) is not None:
       env["label_csv"] = str(paths.label_csv)
 
-    with open(run_dir / cfg.export.env_json_name, "w") as f:
+    with open(run_dir / cfg.core.export.env_json_name, "w") as f:
       json.dump(env, f, indent=2)
 
 

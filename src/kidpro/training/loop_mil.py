@@ -127,7 +127,7 @@ def fit_mil(
     Path to best model checkpoint
   """
   run_dir = Path(cfg.run_dir) if cfg.run_dir else Path.cwd()
-  best_path = run_dir / cfg.export.best_weights_name
+  best_path = run_dir / cfg.core.export.best_weights_name
 
   # FIXED: Proper amp handling
   use_amp = (rr.device == "cuda" and HAS_AMP)
@@ -221,7 +221,7 @@ def fit_mil(
     if val_auc > best_val_auc:
       best_val_auc = val_auc
       best_epoch = epoch + 1  # 1-based
-      if cfg.export.save_best_weights:
+      if cfg.core.export.save_best_weights:
         torch.save(model.state_dict(), best_path)
 
     # -------------------------
@@ -245,7 +245,7 @@ def fit_mil(
       break
 
   # Load best weights (by val_auc)
-  if cfg.export.save_best_weights and best_path.exists():
+  if cfg.core.export.save_best_weights and best_path.exists():
     log.info(f"[DONE] Best model saved to {best_path}")
     model.load_state_dict(torch.load(best_path, map_location=rr.device))
 

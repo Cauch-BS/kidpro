@@ -127,7 +127,7 @@ def fit(
   # FIX: Handle Optional[Path]
   run_dir = Path(cfg.run_dir) if cfg.run_dir else Path.cwd()
 
-  best_path = run_dir / cfg.export.best_weights_name
+  best_path = run_dir / cfg.core.export.best_weights_name
 
   stopper = EarlyStopping(
     patience=cfg.train.early_stopping.patience,
@@ -151,7 +151,7 @@ def fit(
         mlflow.log_metric("val_iou", val_iou, step=epoch + 1)
 
     is_best = stopper.step(val_loss)
-    if is_best and cfg.export.save_best_weights:
+    if is_best and cfg.core.export.save_best_weights:
       torch.save(model.state_dict(), best_path)
 
     log.info(
@@ -168,7 +168,7 @@ def fit(
       log.info("[Early Stop] Training stopped.")
       break
 
-  if cfg.export.save_best_weights and best_path.exists():
+  if cfg.core.export.save_best_weights and best_path.exists():
     log.info(f"[DONE] Best model saved to {best_path}")
     model.load_state_dict(torch.load(best_path, map_location=rr.device))
   return best_path

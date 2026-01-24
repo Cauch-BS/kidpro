@@ -317,6 +317,10 @@ class DatasetCfg(BaseModel):
   task: TaskCfg
   data: DataCfg
 
+class CoreCfg(BaseModel):
+  runtime: RuntimeCfg
+  export: ExportCfg
+
 # -------------------------
 # App config (cross-field validation)
 # -------------------------
@@ -324,8 +328,7 @@ class AppCfg(BaseModel):
   model: ModelCfg
   dataset: DatasetCfg
   train: TrainCfg
-  runtime: RuntimeCfg
-  export: ExportCfg
+  core: CoreCfg
   mlflow: MlflowCfg
   inference: Optional[InferenceCfg] = None
 

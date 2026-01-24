@@ -83,7 +83,7 @@ def main(hcfg: DictConfig) -> None:
         }
       )
       best_path = fit(cfg, rr, model, dl_tr, dl_va, criterion, optimizer)
-      if cfg.export.save_best_weights and best_path.exists():
+      if cfg.core.export.save_best_weights and best_path.exists():
         mlflow.log_artifact(str(best_path), artifact_path="weights")
       mlflow.pytorch.log_model(
         model,
