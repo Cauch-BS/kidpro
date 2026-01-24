@@ -38,7 +38,7 @@ lora:
 freeze_backbone: true
 
 # --- Foundation backbone ---
-foundation_dim: 1024
+foundation_dim: 1536
 
 # --- Input expectations (center-cropped from data.patch_size tiles) ---
 input_size: 224
