@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from typing import cast
 
 import torch
@@ -37,22 +38,34 @@ def build(cfg: AppCfg) -> FoundationBackbone:
     if arch == "prov_gigapath":
         arch = "vit_giant_patch14_dinov2"
 
-    tile_encoder = timm.create_model(
-        arch,
-        pretrained=False,
-        num_classes=0,
-        global_pool="token",
-        in_chans=cfg.model.in_channels,
-    )
+    try:
+        tile_encoder = timm.create_model(
+            "hf_hub:prov-gigapath/prov-gigapath",
+            pretrained=True,
+            num_classes=0,
+            global_pool="token",
+        )
+    except Exception as exc:
+        warnings.warn(
+            "Failed to load HF Hub prov-gigapath model; falling back to local weights.",
+            RuntimeWarning,
+        )
+        tile_encoder = timm.create_model(
+            arch,
+            pretrained=False,
+            num_classes=0,
+            global_pool="token",
+            in_chans=cfg.model.in_channels,
+        )
 
-    ckpt = resolve_weights_path(cfg)
-    if ckpt is not None:
-        if ckpt.exists():
-            load_state_dict_generic(tile_encoder, ckpt)
-        elif ckpt.name == "model.pt":
-            candidate = ckpt.with_name("pytorch_model.bin")
-            if candidate.exists():
-                load_state_dict_generic(tile_encoder, candidate)
+        ckpt = resolve_weights_path(cfg)
+        if ckpt is not None:
+            if ckpt.exists():
+                load_state_dict_generic(tile_encoder, ckpt)
+            elif ckpt.name == "model.pt":
+                candidate = ckpt.with_name("pytorch_model.bin")
+                if candidate.exists():
+                    load_state_dict_generic(tile_encoder, candidate)
 
     backbone = ProvGigaPathBackbone(
         tile_encoder=tile_encoder,
