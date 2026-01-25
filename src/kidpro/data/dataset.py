@@ -24,14 +24,20 @@ class SegDataset(Dataset):
   def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
     row = self.df.iloc[idx]
 
+    task = self.cfg.dataset.task
+    if task.type == "mil":
+      raise ValueError("SegDataset requires a segmentation task configuration.")
+
     img = cv2.imread(row["path"])
+    if img is None:
+      raise FileNotFoundError(f"Image not found: {row['path']}")
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
     slide_dir = Path(row["path"]).parents[1]
     mask_root = slide_dir / "masks"
 
     masks = []
-    for lid in self.cfg.dataset.task.layer_ids:
+    for lid in task.layer_ids:
       mp = mask_root / f"layer{lid}" / row["name"]
       if mp.exists():
         m = cv2.imread(str(mp), 0) > 127
@@ -39,7 +45,7 @@ class SegDataset(Dataset):
         m = np.zeros(img.shape[:2], bool)
       masks.append(m)
 
-    if self.cfg.dataset.task.type == "binary":
+    if task.type == "binary":
       mask = masks[0].astype(np.float32)
     else:
       mask = np.zeros(img.shape[:2], np.int64)
@@ -51,7 +57,7 @@ class SegDataset(Dataset):
       img, mask = out["image"], out["mask"]
 
     img = img.float()
-    if self.cfg.dataset.task.type == "binary":
+    if task.type == "binary":
       mask = mask.float()
     else:
       mask = mask.long()
