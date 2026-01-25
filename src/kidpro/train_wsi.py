@@ -41,6 +41,11 @@ def main(hcfg: DictConfig) -> None:
   ds_tr = MILDataset(cfg, df_tr, transform=train_tf)
   ds_va = MILDataset(cfg, df_va, transform=val_tf)
 
+  def _mil_collate(batch: list[tuple[object, torch.Tensor, str]]) -> tuple[object, torch.Tensor, str]:
+    if len(batch) != 1:
+      raise ValueError("MIL collate expects batch_size=1.")
+    return batch[0]
+
   dl_tr = torch.utils.data.DataLoader(
     ds_tr,
     batch_size=1,
@@ -49,6 +54,7 @@ def main(hcfg: DictConfig) -> None:
     pin_memory=cfg.dataset.data.pin_memory,
     persistent_workers=(cfg.dataset.data.num_workers > 0),
     prefetch_factor=4 if cfg.dataset.data.num_workers > 0 else None,
+    collate_fn=_mil_collate,
   )
   dl_va = torch.utils.data.DataLoader(
     ds_va,
@@ -58,6 +64,7 @@ def main(hcfg: DictConfig) -> None:
     pin_memory=cfg.dataset.data.pin_memory,
     persistent_workers=(cfg.dataset.data.num_workers > 0),
     prefetch_factor=4 if cfg.dataset.data.num_workers > 0 else None,
+    collate_fn=_mil_collate,
   )
 
   model = build_model_mil(cfg).to(rr.device)
