@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -99,7 +99,7 @@ class MILDataset(Dataset):
     safe_slide = slide_name.replace("/", "_")
     return self._tile_cache_dir / f"{safe_slide}.zarr"
 
-  def _zarr_compressor(self):
+  def _zarr_compressor(self) -> Optional[Any]:
     if self.cache_cfg.compression == "blosc":
       if Blosc is None:
         raise RuntimeError("numcodecs is required for blosc compression.")
@@ -122,7 +122,7 @@ class MILDataset(Dataset):
     while len(self._memory_cache) > self.cache_cfg.memory_max_slides:
       self._memory_cache.popitem(last=False)
 
-  def _open_zarr_group(self, cache_path: Path, mode: str):
+  def _open_zarr_group(self, cache_path: Path, mode: str) -> Any:
     if zarr is None:
       raise RuntimeError("zarr is required for MIL tile caching.")
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,8 +131,8 @@ class MILDataset(Dataset):
   def _iter_tile_arrays(self, slide_name: str) -> Iterable[tuple[np.ndarray, list[int]]]:
     cached = self._get_memory_cache(slide_name)
     if cached is not None:
-      tiles, coords = cached
-      for arr, coord in zip(tiles, coords):
+      cached_tiles, cached_coords = cached
+      for arr, coord in zip(cached_tiles, cached_coords):
         yield arr, coord
       return
 
@@ -144,14 +144,14 @@ class MILDataset(Dataset):
     if cache_path is not None and cache_path.exists():
       group = self._open_zarr_group(cache_path, mode="r")
       if group.attrs.get("complete", False):
-        tiles = group["tiles"]
-        coords = group["coords"]
+        zarr_tiles: Any = cast(Any, group["tiles"])
+        zarr_coords: Any = cast(Any, group["coords"])
         mem_tiles: Optional[list[np.ndarray]] = [] if self._memory_cache is not None else None
         mem_coords: Optional[list[list[int]]] = [] if self._memory_cache is not None else None
-        for start in range(0, tiles.shape[0], chunk_size):
-          end = min(start + chunk_size, tiles.shape[0])
-          tiles_chunk = tiles[start:end]
-          coords_chunk = coords[start:end]
+        for start in range(0, zarr_tiles.shape[0], chunk_size):
+          end = min(start + chunk_size, zarr_tiles.shape[0])
+          tiles_chunk = zarr_tiles[start:end]
+          coords_chunk = zarr_coords[start:end]
           for arr, coord in zip(tiles_chunk, coords_chunk):
             coord_list = [int(coord[0]), int(coord[1])]
             if mem_tiles is not None and mem_coords is not None:
@@ -175,8 +175,8 @@ class MILDataset(Dataset):
     slide_path = self._resolve_slide_path(slide_name)
     wsi = open_wsidata(str(slide_path), cache_path_wsi)
     found_tile = False
-    mem_tiles: Optional[list[np.ndarray]] = [] if self._memory_cache is not None else None
-    mem_coords: Optional[list[list[int]]] = [] if self._memory_cache is not None else None
+    mem_tiles_live: Optional[list[np.ndarray]] = [] if self._memory_cache is not None else None
+    mem_coords_live: Optional[list[list[int]]] = [] if self._memory_cache is not None else None
     tiles_buffer: list[np.ndarray] = []
     coords_buffer: list[list[int]] = []
     tiles_ds = None
@@ -191,19 +191,20 @@ class MILDataset(Dataset):
 
         if group is not None and tiles_ds is None:
           compressor = self._zarr_compressor()
+          compressors = {"default": compressor} if compressor is not None else None
           tiles_ds = group.create_array(
             "tiles",
             shape=(0, *arr.shape),
             chunks=(chunk_size, *arr.shape),
             dtype="uint8",
-            compressor=compressor,
+            compressors=compressors,
           )
           coords_ds = group.create_array(
             "coords",
             shape=(0, 2),
             chunks=(chunk_size, 2),
             dtype="int32",
-            compressor=compressor,
+            compressors=compressors,
           )
           group.attrs["complete"] = False
 
@@ -216,9 +217,9 @@ class MILDataset(Dataset):
             tiles_buffer = []
             coords_buffer = []
 
-        if mem_tiles is not None and mem_coords is not None:
-          mem_tiles.append(arr)
-          mem_coords.append(coord_list)
+        if mem_tiles_live is not None and mem_coords_live is not None:
+          mem_tiles_live.append(arr)
+          mem_coords_live.append(coord_list)
 
         yield arr, coord_list
     finally:
@@ -234,8 +235,8 @@ class MILDataset(Dataset):
         coords_ds.append(np.asarray(coords_buffer, dtype=np.int32))
       group.attrs["complete"] = True
 
-    if mem_tiles is not None and mem_coords is not None:
-      self._put_memory_cache(slide_name, mem_tiles, mem_coords)
+    if mem_tiles_live is not None and mem_coords_live is not None:
+      self._put_memory_cache(slide_name, mem_tiles_live, mem_coords_live)
 
   def _apply_transform(self, arr: np.ndarray) -> torch.Tensor:
     if self.transform is not None:
@@ -265,5 +266,6 @@ class MILDataset(Dataset):
     if pd.isna(gt_val):
       raise RuntimeError(f"GT is NaN for slide {slide_name}. This should not be in MIL split set.")
 
-    y = torch.tensor(int(gt_val), dtype=torch.long)
+    # Ensure target has batch dimension for CrossEntropyLoss
+    y = torch.tensor([int(gt_val)], dtype=torch.long)
     return TileStream(self, slide_name), y, slide_name
