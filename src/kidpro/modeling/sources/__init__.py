@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pickle
+import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -27,16 +30,27 @@ def freeze_module(module: nn.Module) -> None:
         p.requires_grad = False
 
 
+def _as_state_dict(obj: object) -> dict[str, torch.Tensor]:
+    if isinstance(obj, nn.Module):
+        return {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v
+                for k, v in obj.state_dict().items()}
+
+    if isinstance(obj, Mapping):
+        if "state_dict" in obj and isinstance(obj["state_dict"], Mapping):
+            return dict(obj["state_dict"])
+        if all(isinstance(v, torch.Tensor) for v in obj.values()):
+            return dict(obj)
+
+    raise TypeError(
+        f"Unsupported checkpoint payload type: {type(obj)}. "
+        "Expected state_dict-like mapping or {'state_dict': ...}."
+    )
+
 def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> None:
-    """
-    Load a checkpoint into `model` with common head-stripping.
-    Works with .pt/.pth (torch.load) and .safetensors if installed.
-    """
     ckpt_path = Path(ckpt_path)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-    state: dict[str, torch.Tensor]
     if ckpt_path.suffix == ".safetensors":
         try:
             from safetensors.torch import load_file
@@ -48,33 +62,54 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> None:
         state = load_file(str(ckpt_path))
     else:
         try:
-            obj = torch.load(str(ckpt_path), map_location="cpu")
-            state = obj["state_dict"] if isinstance(obj, dict) and "state_dict" in obj else obj
+            try:
+                obj = torch.load(str(ckpt_path), map_location="cpu", weights_only=True)
+            except TypeError:
+                obj = torch.load(str(ckpt_path), map_location="cpu")
+        except (pickle.UnpicklingError, RuntimeError) as e:
+            warnings.warn(
+                "Checkpoint requires pickle deserialization (full object). "
+                "Retrying with weights_only=False. Do this only for trusted checkpoints.",
+                RuntimeWarning,
+            )
+            obj = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
         except Exception as e:
             raise RuntimeError(
-                f"Failed to load checkpoint from {ckpt_path}. "
-                "The file may be corrupted or not a valid PyTorch checkpoint."
+                f"Failed to load checkpoint from {ckpt_path}: {e}"
             ) from e
 
-    # Strip typical classifier / head parameters
+        state = _as_state_dict(obj)
+
     head_prefixes = ("fc.", "classifier.", "head.", "last_linear.")
     filtered = {k: v for k, v in state.items() if not k.startswith(head_prefixes)}
 
-    # Allow common wrapper prefixes (DDP, nested modules, or segmentation heads)
     prefixes = ("module.", "model.", "backbone.", "tile_encoder.")
     stripped: dict[str, torch.Tensor] = {}
+    collisions: list[tuple[str, str]] = []
+
     for k, v in filtered.items():
-        matched = False
+        out_k = k
         for prefix in prefixes:
-            if k.startswith(prefix):
-                stripped[k[len(prefix):]] = v
-                matched = True
+            if out_k.startswith(prefix):
+                out_k = out_k[len(prefix):]
                 break
-        if not matched:
-            stripped[k] = v
+        if out_k in stripped and stripped[out_k] is not v:
+            collisions.append((out_k, k))
+        stripped[out_k] = v
+
+    if collisions:
+        raise RuntimeError(
+            "Key collision(s) after prefix stripping, e.g. "
+            + ", ".join([f"{out_k} <- {src}" for out_k, src in collisions[:5]])
+            + (" ..." if len(collisions) > 5 else "")
+        )
 
     missing, unexpected = model.load_state_dict(stripped, strict=False)
-    print("[FND CKPT]", "missing:", missing[:8], "unexpected:", unexpected[:8])
+    print(
+        "[FND CKPT]",
+        f"missing={len(missing)} (showing up to 8): {missing[:8]}",
+        f"unexpected={len(unexpected)} (showing up to 8): {unexpected[:8]}",
+    )
 
 
 def resolve_weights_path(cfg: AppCfg) -> Optional[Path]:
