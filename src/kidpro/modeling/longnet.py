@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import torch
 import torch.nn as nn
@@ -138,9 +138,15 @@ class LongNetMIL(nn.Module):
         self.slide_encoder = slide_encoder
         self.classifier = nn.Linear(slide_encoder.embed_dim, num_classes)
 
-    def forward(self, x: torch.Tensor, coords: torch.Tensor | None = None) -> torch.Tensor:
+    def encode_tiles(self, x: torch.Tensor) -> torch.Tensor:
+        return cast(torch.Tensor, self.tile_encoder(x))
+
+    def encode_slide(self, feats: torch.Tensor, coords: torch.Tensor | None = None) -> torch.Tensor:
         if coords is None:
             raise ValueError("coords are required for LongNetMIL.")
-        feats = self.tile_encoder(x)
         slide_out = self.slide_encoder(feats.unsqueeze(0), coords.unsqueeze(0))[-1]
         return self.classifier(slide_out) # type: ignore
+
+    def forward(self, x: torch.Tensor, coords: torch.Tensor | None = None) -> torch.Tensor:
+        feats = self.encode_tiles(x)
+        return self.encode_slide(feats, coords)

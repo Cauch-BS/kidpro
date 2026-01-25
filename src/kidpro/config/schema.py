@@ -173,6 +173,24 @@ class ModelCfg(BaseModel):
 # -------------------------
 # Data / Train / Runtime / Export
 # -------------------------
+class MILCacheCfg(BaseModel):
+  enabled: bool = False
+  cache_subdir: str = "mil_tiles_cache"
+  chunk_size: int = 64
+  compression: Literal["none", "blosc"] = "none"
+  memory_max_slides: int = 0
+
+  @model_validator(mode="after")
+  def _validate(self) -> "MILCacheCfg":
+    if not self.cache_subdir:
+      raise ValueError("data.mil_cache.cache_subdir must be non-empty.")
+    if self.chunk_size <= 0:
+      raise ValueError("data.mil_cache.chunk_size must be > 0.")
+    if self.memory_max_slides < 0:
+      raise ValueError("data.mil_cache.memory_max_slides must be >= 0.")
+    return self
+
+
 class DataCfg(BaseModel):
   patch_size: int = 256
   train_ratio: float = 0.6
@@ -180,6 +198,7 @@ class DataCfg(BaseModel):
   val_ratio: float = 0.2
   num_workers: int = 4
   pin_memory: bool = True
+  mil_cache: MILCacheCfg = Field(default_factory=MILCacheCfg)
 
   @model_validator(mode="after")
   def _validate(self) -> "DataCfg":

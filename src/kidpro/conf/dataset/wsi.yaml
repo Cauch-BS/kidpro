@@ -22,3 +22,9 @@ data:
   val_ratio: 0.1
   num_workers: 16
   pin_memory: true
+  mil_cache:
+    enabled: true
+    cache_subdir: mil_tiles_cache
+    chunk_size: 64
+    compression: none
+    memory_max_slides: 0

@@ -35,8 +35,8 @@ log = logging.getLogger(__name__)
 
 
 def _unpack_mil_batch(
-  batch: tuple[torch.Tensor, ...],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, str]:
+  batch: tuple[Any, ...],
+) -> tuple[Any, torch.Tensor, torch.Tensor | None, str]:
   if len(batch) == 3:
     x, y, slide = batch
     return x, y, None, str(slide)
@@ -46,8 +46,58 @@ def _unpack_mil_batch(
   raise ValueError(f"Unexpected MIL batch format with {len(batch)} items.")
 
 
+def _unwrap_singleton(value: Any) -> Any:
+  if isinstance(value, list) and len(value) == 1:
+    return value[0]
+  return value
+
+
+def _stream_slide_logits(
+  model: nn.Module,
+  tile_stream: Any,
+  rr: RuntimeResolved,
+  cfg: AppCfg,
+  use_amp: bool,
+  asynchrony: bool,
+) -> tuple[torch.Tensor, int]:
+  if not hasattr(tile_stream, "iter_batches"):
+    raise ValueError("Expected a tile stream with iter_batches().")
+  chunk_size = cfg.dataset.data.mil_cache.chunk_size
+  feats_list: list[torch.Tensor] = []
+  coords_list: list[torch.Tensor] = []
+  tile_count = 0
+  encode_tiles = getattr(model, "encode_tiles", None)
+  encode_slide = getattr(model, "encode_slide", None)
+
+  for tiles, coords in tile_stream.iter_batches(chunk_size):
+    tiles = tiles.to(rr.device, non_blocking=asynchrony)
+    coords = coords.to(rr.device, non_blocking=asynchrony)
+    tile_count += int(tiles.size(0))
+
+    if use_amp and autocast is not None:
+      with autocast(device_type="cuda"):
+        feats = encode_tiles(tiles) if callable(encode_tiles) else model.tile_encoder(tiles) # type: ignore
+    else:
+      feats = encode_tiles(tiles) if callable(encode_tiles) else model.tile_encoder(tiles) # type: ignore
+
+    feats_list.append(feats)
+    coords_list.append(coords)
+
+  if tile_count == 0:
+    raise RuntimeError("Empty tile stream for slide.")
+
+  feats_all = torch.cat(feats_list, dim=0)
+  coords_all = torch.cat(coords_list, dim=0)
+  if use_amp and autocast is not None:
+    with autocast(device_type="cuda"):
+      logits = encode_slide(feats_all, coords_all) if callable(encode_slide) else model(feats_all, coords_all)
+  else:
+    logits = encode_slide(feats_all, coords_all) if callable(encode_slide) else model(feats_all, coords_all)
+  return logits, tile_count
+
+
 @torch.no_grad()
-def evaluate_mil(rr: RuntimeResolved, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
+def evaluate_mil(cfg: AppCfg, rr: RuntimeResolved, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
   """
   Evaluate MIL model on a validation/test set.
 
@@ -67,20 +117,22 @@ def evaluate_mil(rr: RuntimeResolved, model: nn.Module, loader: DataLoader) -> D
 
   for batch in tqdm(loader, desc="Eval", leave=False):
     x, y, coords, _slide = _unpack_mil_batch(batch)
-    x = x.squeeze(0).to(rr.device, non_blocking=True)  # (N,C,H,W)
-    y = y.to(rr.device, non_blocking=True)             # (1,)
-    coords_t = coords.squeeze(0).to(rr.device, non_blocking=True) if coords is not None else None
+    x = _unwrap_singleton(x)
+    y = y.to(rr.device, non_blocking=True)  # (1,)
 
-    # FIXED: Proper amp context handling
-    if use_amp and autocast is not None:
-      with autocast(device_type="cuda"):
-        logits = model(x, coords_t)  # (1,2)
-        prob = torch.softmax(logits, dim=1)[:, 1]
-        pred = torch.argmax(logits, dim=1)
+    if hasattr(x, "iter_batches"):
+      logits, _tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony=True)
     else:
-      logits = model(x, coords_t)
-      prob = torch.softmax(logits, dim=1)[:, 1]
-      pred = torch.argmax(logits, dim=1)
+      x = x.squeeze(0).to(rr.device, non_blocking=True)  # (N,C,H,W)
+      coords_t = coords.squeeze(0).to(rr.device, non_blocking=True) if coords is not None else None
+      if use_amp and autocast is not None:
+        with autocast(device_type="cuda"):
+          logits = model(x, coords_t)  # (1,2)
+      else:
+        logits = model(x, coords_t)
+
+    prob = torch.softmax(logits, dim=1)[:, 1]
+    pred = torch.argmax(logits, dim=1)
 
     y_true.append(int(y.item()))
     y_prob.append(float(prob.item()))
@@ -155,20 +207,25 @@ def fit_mil(
 
     for batch in pbar:
       x, y, coords, _slide = _unpack_mil_batch(batch)
-      x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)  # (N,C,H,W)
+      x = _unwrap_singleton(x)
       y = y.to(rr.device, non_blocking=asynchrony)             # (1,)
-      coords_t = coords.squeeze(0).to(rr.device, non_blocking=asynchrony) if coords is not None else None
 
       optimizer.zero_grad(set_to_none=True)
 
-      # FIXED: Proper amp handling
-      if use_amp and autocast is not None:
-        with autocast(device_type="cuda"):
-          logits = model(x, coords_t)  # (1,2)
-          loss = criterion(logits, y)
-      else:
-        logits = model(x, coords_t)
+      if hasattr(x, "iter_batches"):
+        logits, tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
         loss = criterion(logits, y)
+      else:
+        x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)  # (N,C,H,W)
+        coords_t = coords.squeeze(0).to(rr.device, non_blocking=asynchrony) if coords is not None else None
+        tile_count = int(x.size(0))
+        if use_amp and autocast is not None:
+          with autocast(device_type="cuda"):
+            logits = model(x, coords_t)  # (1,2)
+            loss = criterion(logits, y)
+        else:
+          logits = model(x, coords_t)
+          loss = criterion(logits, y)
 
       if use_amp and scaler is not None:
         scaler.scale(loss).backward()
@@ -179,7 +236,7 @@ def fit_mil(
         optimizer.step()
 
       train_losses.append(float(loss.item()))
-      pbar.set_postfix(train_loss=f"{loss.item():.4f}", n_patches=int(x.size(0)))
+      pbar.set_postfix(train_loss=f"{loss.item():.4f}", n_patches=tile_count)
 
     train_loss = float(np.mean(train_losses)) if train_losses else 0.0
 
@@ -191,17 +248,22 @@ def fit_mil(
     with torch.no_grad():
       for batch in tqdm(val_loader, desc="ValLoss", leave=False):
         x, y, coords, _slide = _unpack_mil_batch(batch)
-        x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)
+        x = _unwrap_singleton(x)
         y = y.to(rr.device, non_blocking=asynchrony)
-        coords_t = coords.squeeze(0).to(rr.device, non_blocking=asynchrony) if coords is not None else None
 
-        if use_amp and autocast is not None:
-          with autocast(device_type="cuda"):
+        if hasattr(x, "iter_batches"):
+          logits, _tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
+          loss = criterion(logits, y)
+        else:
+          x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)
+          coords_t = coords.squeeze(0).to(rr.device, non_blocking=asynchrony) if coords is not None else None
+          if use_amp and autocast is not None:
+            with autocast(device_type="cuda"):
+              logits = model(x, coords_t)
+              loss = criterion(logits, y)
+          else:
             logits = model(x, coords_t)
             loss = criterion(logits, y)
-        else:
-          logits = model(x, coords_t)
-          loss = criterion(logits, y)
 
         val_losses.append(float(loss.item()))
 
@@ -210,7 +272,7 @@ def fit_mil(
     # -------------------------
     # Val metrics
     # -------------------------
-    metrics = evaluate_mil(rr, model, val_loader)
+    metrics = evaluate_mil(cfg, rr, model, val_loader)
     auc = metrics.get("auc", None)
     val_auc = float(auc) if isinstance(auc, (float, int)) else -math.inf
     auc_str = f"{val_auc:.4f}" if math.isfinite(val_auc) else "None"

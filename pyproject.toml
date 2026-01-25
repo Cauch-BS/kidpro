@@ -23,6 +23,7 @@ dependencies = [
   "scikit-image>=0.22",
   "lazyslide>=0.2.0",
   "wsidata>=0.1.0",
+  "zarr",
   "flash-attn>=2.5.2",
   # Config
   "hydra-core>=1.3",

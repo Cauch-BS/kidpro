@@ -6,6 +6,7 @@ dependencies:
   - pip
   - python
   - wsidata
+  - zarr
   - lazyslide
   - ipywidgets
   - pytorch
