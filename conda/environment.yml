@@ -28,3 +28,6 @@ dependencies:
   - ipykernel
   - hydra-core
   - omegaconf
+  - cuda-toolkit
+  - cuda-nvcc
+  - flash-attn
