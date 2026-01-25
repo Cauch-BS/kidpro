@@ -309,6 +309,7 @@ class MlflowCfg(BaseModel):
   enabled: bool = True
   registry_model_name: str
   selection_metric: str = "val_iou"
+  load_selection_metric: Optional[str] = None
   tracking_uri: Optional[str] = "http://localhost:5000"
 
 

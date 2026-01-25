@@ -166,7 +166,7 @@ def resolve_best_model_from_mlflow(cfg: AppCfg, model_name: str) -> Path:
   Usage guide:
   - Enable MLflow in config: `mlflow.enabled=true`
   - Set `mlflow.registry_model_name` to the registered model name used by train_tile
-  - Ensure train_tile logs `val_iou` (or the metric in `mlflow.selection_metric`)
+  - Ensure train_tile logs `val_iou` (or the metric in `mlflow.load_selection_metric`)
   - The model with the highest selection metric is downloaded and its weights returned
   """
   if not cfg.mlflow.enabled:
@@ -192,7 +192,7 @@ def resolve_best_model_from_mlflow(cfg: AppCfg, model_name: str) -> Path:
       f"No model versions found with name '{model_name}'."
     )
 
-  metric_name = cfg.mlflow.selection_metric
+  metric_name = cfg.mlflow.load_selection_metric or cfg.mlflow.selection_metric
   best_version = None
   best_metric = None
   for version in versions:
