@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, cast
@@ -18,6 +19,13 @@ try:
 except Exception:  # pragma: no cover - optional dependency
   zarr = None  # type: ignore
   Blosc = None  # type: ignore
+
+try:
+  from openslide.lowlevel import OpenSlideError
+except Exception:  # pragma: no cover - optional dependency
+  OpenSlideError = None  # type: ignore
+
+log = logging.getLogger(__name__)
 
 
 class TileStream:
@@ -182,8 +190,32 @@ class MILDataset(Dataset):
     tiles_ds = None
     coords_ds = None
     try:
-      tiles_iter = wsi.iter.tile_images(self.tiles_key)
-      for tile in tiles_iter:
+      tiles_iter = iter(wsi.iter.tile_images(self.tiles_key))
+      consecutive_errors = 0
+      max_errors = 10
+      while True:
+        try:
+          tile = next(tiles_iter)
+        except StopIteration:
+          break
+        except Exception as exc:
+          if OpenSlideError is None or not isinstance(exc, OpenSlideError):
+            raise
+          consecutive_errors += 1
+          log.warning(
+            "Skipping unreadable tile for slide %s (%s/%s): %s",
+            slide_name,
+            consecutive_errors,
+            max_errors,
+            exc,
+          )
+          if consecutive_errors >= max_errors:
+            raise RuntimeError(
+              f"Too many unreadable tiles for slide {slide_name}."
+            ) from exc
+          continue
+
+        consecutive_errors = 0
         found_tile = True
         arr = tile_image_to_array(tile)
         tile_x, tile_y = extract_tile_xy(tile)
