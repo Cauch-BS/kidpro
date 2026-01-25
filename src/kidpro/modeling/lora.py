@@ -19,7 +19,7 @@ def _has_lora_targets(module: nn.Module, target_modules: list[str]) -> bool:
   return False
 
 
-def apply_lora(cfg: AppCfg, encoder: nn.Module, freeze_base: bool) -> nn.Module:
+def apply_lora(cfg: AppCfg, encoder: nn.Module, freeze_base: bool) -> Any:
   lora_cfg = cfg.model.lora
   if not lora_cfg.enabled:
     return encoder

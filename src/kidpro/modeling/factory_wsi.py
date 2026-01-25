@@ -22,7 +22,10 @@ def build_model_mil(cfg: AppCfg) -> Module:
   tile_encoder = getattr(backbone, "tile_encoder", backbone)
 
   if cfg.model.lora.enabled:
-    tile_encoder = apply_lora(cfg, tile_encoder, freeze_base=cfg.model.freeze_backbone)
+    tile_encoder = apply_lora(cfg, tile_encoder, freeze_base=True)
+    # MIL should not fine-tune the tiling model, even with LoRA enabled.
+    # fine-tuning the tiling model should only occur during tile segmentation training.
+    freeze_module(tile_encoder)
     if getattr(backbone, "tile_encoder", None) is not None:
       backbone.tile_encoder = tile_encoder
     else:
