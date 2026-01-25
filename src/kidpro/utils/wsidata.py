@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -14,7 +15,20 @@ except ImportError as exc:
     ) from exc
 
 
+_OME_ZARR_QUIETED = False
+
+
+def _quiet_ome_zarr_logs() -> None:
+    global _OME_ZARR_QUIETED
+    if _OME_ZARR_QUIETED:
+        return
+    logging.getLogger("ome_zarr").setLevel(logging.WARNING)
+    logging.getLogger("ome_zarr.reader").setLevel(logging.WARNING)
+    _OME_ZARR_QUIETED = True
+
+
 def open_wsidata(slide_path: str, store_path: Optional[Path] = None) -> WSIData:
+    _quiet_ome_zarr_logs()
     slide = Path(slide_path)
     if not slide.exists():
         raise FileNotFoundError(f"WSI file not found: {slide_path}")
