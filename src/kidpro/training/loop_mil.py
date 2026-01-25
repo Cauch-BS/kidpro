@@ -34,6 +34,15 @@ from .early_stop import EarlyStopping
 log = logging.getLogger(__name__)
 
 
+def _is_skippable_tile_error(exc: RuntimeError) -> bool:
+  msg = str(exc).lower()
+  return (
+    "no tiles available" in msg
+    or "empty tile stream" in msg
+    or "too many unreadable tiles" in msg
+  )
+
+
 def _unpack_mil_batch(
   batch: tuple[Any, ...],
 ) -> tuple[Any, torch.Tensor, torch.Tensor | None, str]:
@@ -121,7 +130,13 @@ def evaluate_mil(cfg: AppCfg, rr: RuntimeResolved, model: nn.Module, loader: Dat
     y = y.to(rr.device, non_blocking=True)  # (1,)
 
     if hasattr(x, "iter_batches"):
-      logits, _tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony=True)
+      try:
+        logits, _tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony=True)
+      except RuntimeError as exc:
+        if _is_skippable_tile_error(exc):
+          log.warning("Skipping slide %s during eval: %s", _slide, exc)
+          continue
+        raise RuntimeError(f"Error during evaluation: {exc}")
     else:
       x = x.squeeze(0).to(rr.device, non_blocking=True)  # (N,C,H,W)
       coords_t = coords.squeeze(0).to(rr.device, non_blocking=True) if coords is not None else None
@@ -213,7 +228,13 @@ def fit_mil(
       optimizer.zero_grad(set_to_none=True)
 
       if hasattr(x, "iter_batches"):
-        logits, tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
+        try:
+          logits, tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
+        except RuntimeError as exc:
+          if _is_skippable_tile_error(exc):
+            log.warning("Skipping slide %s during training: %s", _slide, exc)
+            continue
+          raise RuntimeError(f"Error during training: {exc}")
         loss = criterion(logits, y)
       else:
         x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)  # (N,C,H,W)
@@ -252,7 +273,13 @@ def fit_mil(
         y = y.to(rr.device, non_blocking=asynchrony)
 
         if hasattr(x, "iter_batches"):
-          logits, _tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
+          try:
+            logits, _tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
+          except RuntimeError as exc:
+            if _is_skippable_tile_error(exc):
+              log.warning("Skipping slide %s during val loss: %s", _slide, exc)
+              continue
+            raise RuntimeError(f"Error during validation: {exc}")
           loss = criterion(logits, y)
         else:
           x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)

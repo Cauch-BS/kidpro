@@ -50,6 +50,58 @@ class TileStream:
       yield self._dataset._stack_tiles(batch_imgs), torch.stack(batch_coords, dim=0)
 
 
+class _ZarrTileWriter:
+  def __init__(self, group: Any, chunk_size: int, compressor: Any | None) -> None:
+    self.group = group
+    self.chunk_size = chunk_size
+    self.tiles_buf: list[np.ndarray] = []
+    self.coords_buf: list[list[int]] = []
+    self.tiles_ds: Any | None = None
+    self.coords_ds: Any | None = None
+    self.compressor = compressor
+
+  def _ensure_created(self, arr_shape: tuple[int, ...]) -> None:
+    if self.tiles_ds is not None:
+      return
+    compressors = {"default": self.compressor} if self.compressor is not None else None
+    self.tiles_ds = self.group.create_array(
+      "tiles",
+      shape=(0, *arr_shape),
+      chunks=(self.chunk_size, *arr_shape),
+      dtype="uint8",
+      compressors=compressors,
+    )
+    self.coords_ds = self.group.create_array(
+      "coords",
+      shape=(0, 2),
+      chunks=(self.chunk_size, 2),
+      dtype="int32",
+      compressors=compressors,
+    )
+    self.group.attrs["complete"] = False
+
+  def add(self, arr: np.ndarray, coord: list[int]) -> None:
+    self._ensure_created(arr.shape)
+    self.tiles_buf.append(arr)
+    self.coords_buf.append(coord)
+    if len(self.tiles_buf) >= self.chunk_size:
+      self.flush()
+
+  def flush(self) -> None:
+    if not self.tiles_buf:
+      return
+    if self.tiles_ds is None or self.coords_ds is None:
+      raise RuntimeError("Zarr datasets are not initialized.")
+    self.tiles_ds.append(np.stack(self.tiles_buf, axis=0))
+    self.coords_ds.append(np.asarray(self.coords_buf, dtype=np.int32))
+    self.tiles_buf.clear()
+    self.coords_buf.clear()
+
+  def close(self, complete: bool) -> None:
+    self.flush()
+    if complete:
+      self.group.attrs["complete"] = True
+
 class MILDataset(Dataset):
   def __init__(self, cfg: AppCfg, df_slide: pd.DataFrame, transform: Optional[Callable] = None) -> None:
     self.cfg = cfg
@@ -136,136 +188,129 @@ class MILDataset(Dataset):
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     return zarr.open_group(str(cache_path), mode=mode)
 
+  def _safe_iter_tiles(self, wsi: Any, slide_name: str) -> Iterable[Any]:
+    it = iter(wsi.iter.tile_images(self.tiles_key))
+    consecutive = 0
+    max_errors = 10
+
+    while True:
+      try:
+        tile = next(it)
+      except StopIteration:
+        return
+      except Exception as exc:
+        if OpenSlideError is None or not isinstance(exc, OpenSlideError):
+          raise
+        consecutive += 1
+        log.warning(
+          "Skipping unreadable tile for slide %s (%s/%s): %s",
+          slide_name, consecutive, max_errors, exc,
+        )
+        if consecutive >= max_errors:
+          raise RuntimeError(f"Exceeded max errors ({max_errors}) for slide {slide_name}.") from exc
+        continue
+
+      consecutive = 0
+      yield tile
+
+  def _iter_from_zarr(
+    self, group: Any, chunk_size: int
+  ) -> Iterable[tuple[np.ndarray, list[int]]]:
+    zarr_tiles = cast(Any, group["tiles"])
+    zarr_coords = cast(Any, group["coords"])
+
+    for start in range(0, zarr_tiles.shape[0], chunk_size):
+      end = min(start + chunk_size, zarr_tiles.shape[0])
+      tiles_chunk = zarr_tiles[start:end]
+      coords_chunk = zarr_coords[start:end]
+      for arr, coord in zip(tiles_chunk, coords_chunk):
+        yield arr, [int(coord[0]), int(coord[1])]
+
+
+  def _iter_from_wsi_building_cache(
+    self,
+    slide_name: str,
+    wsi: Any,
+    writer: _ZarrTileWriter | None,
+  ) -> Iterable[tuple[np.ndarray, list[int]]]:
+    found = False
+    for tile in self._safe_iter_tiles(wsi, slide_name):
+      found = True
+      arr = tile_image_to_array(tile)
+      x, y = extract_tile_xy(tile)
+      coord = [x, y]
+      if writer is not None:
+        writer.add(arr, coord)
+      yield arr, coord
+
+    if not found:
+      raise RuntimeError(f"No tiles available for slide: {slide_name}")
+
   def _iter_tile_arrays(self, slide_name: str) -> Iterable[tuple[np.ndarray, list[int]]]:
+    # 1) memory cache
     cached = self._get_memory_cache(slide_name)
     if cached is not None:
-      cached_tiles, cached_coords = cached
-      for arr, coord in zip(cached_tiles, cached_coords):
-        yield arr, coord
+      tiles, coords = cached
+      yield from zip(tiles, coords)
       return
 
-    cache_path = self._zarr_cache_path(slide_name)
-    worker_info = get_worker_info()
-    allow_write = worker_info is None
     chunk_size = self.cache_cfg.chunk_size
+    worker_info = get_worker_info()
+    allow_write = worker_info is None  # your policy
 
+    cache_path = self._zarr_cache_path(slide_name)
+    group = None
+
+    # 2) zarr cache read path (complete only)
     if cache_path is not None and cache_path.exists():
-      group = self._open_zarr_group(cache_path, mode="r")
-      if group.attrs.get("complete", False):
-        zarr_tiles: Any = cast(Any, group["tiles"])
-        zarr_coords: Any = cast(Any, group["coords"])
-        mem_tiles: Optional[list[np.ndarray]] = [] if self._memory_cache is not None else None
-        mem_coords: Optional[list[list[int]]] = [] if self._memory_cache is not None else None
-        for start in range(0, zarr_tiles.shape[0], chunk_size):
-          end = min(start + chunk_size, zarr_tiles.shape[0])
-          tiles_chunk = zarr_tiles[start:end]
-          coords_chunk = zarr_coords[start:end]
-          for arr, coord in zip(tiles_chunk, coords_chunk):
-            coord_list = [int(coord[0]), int(coord[1])]
-            if mem_tiles is not None and mem_coords is not None:
-              mem_tiles.append(arr)
-              mem_coords.append(coord_list)
-            yield arr, coord_list
+      g = self._open_zarr_group(cache_path, mode="r")
+      if g.attrs.get("complete", False):
+        mem_tiles: list[np.ndarray] | None = [] if self._memory_cache is not None else None
+        mem_coords: list[list[int]] | None = [] if self._memory_cache is not None else None
+        for arr, coord in self._iter_from_zarr(g, chunk_size):
+          if mem_tiles is not None and mem_coords is not None:
+            mem_tiles.append(arr)
+            mem_coords.append(coord)
+          yield arr, coord
         if mem_tiles is not None and mem_coords is not None:
           self._put_memory_cache(slide_name, mem_tiles, mem_coords)
         return
       if allow_write:
-        group = self._open_zarr_group(cache_path, mode="w")
-      else:
-        group = None
+        group = self._open_zarr_group(cache_path, mode="w")  # rebuild
     else:
-      group = self._open_zarr_group(cache_path, mode="a") if cache_path is not None and allow_write else None
+      if cache_path is not None and allow_write:
+        group = self._open_zarr_group(cache_path, mode="a")
 
+    # 3) build path: stream from WSI; optionally write cache
     cache_path_wsi = self._resolve_cache_path(slide_name)
     if not cache_path_wsi.exists():
       raise RuntimeError(f"Missing wsidata cache for slide {slide_name}: {cache_path_wsi}")
 
     slide_path = self._resolve_slide_path(slide_name)
     wsi = open_wsidata(str(slide_path), cache_path_wsi)
-    found_tile = False
-    mem_tiles_live: Optional[list[np.ndarray]] = [] if self._memory_cache is not None else None
-    mem_coords_live: Optional[list[list[int]]] = [] if self._memory_cache is not None else None
-    tiles_buffer: list[np.ndarray] = []
-    coords_buffer: list[list[int]] = []
-    tiles_ds = None
-    coords_ds = None
+
+    writer = None
+    if group is not None:
+      writer = _ZarrTileWriter(group, chunk_size, self._zarr_compressor())
+
+    mem_tiles_live: list[np.ndarray] | None = [] if self._memory_cache is not None else None
+    mem_coords_live: list[list[int]] | None = [] if self._memory_cache is not None else None
+
     try:
-      tiles_iter = iter(wsi.iter.tile_images(self.tiles_key))
-      consecutive_errors = 0
-      max_errors = 10
-      while True:
-        try:
-          tile = next(tiles_iter)
-        except StopIteration:
-          break
-        except Exception as exc:
-          if OpenSlideError is None or not isinstance(exc, OpenSlideError):
-            raise
-          consecutive_errors += 1
-          log.warning(
-            "Skipping unreadable tile for slide %s (%s/%s): %s",
-            slide_name,
-            consecutive_errors,
-            max_errors,
-            exc,
-          )
-          if consecutive_errors >= max_errors:
-            raise RuntimeError(
-              f"Too many unreadable tiles for slide {slide_name}."
-            ) from exc
-          continue
-
-        consecutive_errors = 0
-        found_tile = True
-        arr = tile_image_to_array(tile)
-        tile_x, tile_y = extract_tile_xy(tile)
-        coord_list = [tile_x, tile_y]
-
-        if group is not None and tiles_ds is None:
-          compressor = self._zarr_compressor()
-          compressors = {"default": compressor} if compressor is not None else None
-          tiles_ds = group.create_array(
-            "tiles",
-            shape=(0, *arr.shape),
-            chunks=(chunk_size, *arr.shape),
-            dtype="uint8",
-            compressors=compressors,
-          )
-          coords_ds = group.create_array(
-            "coords",
-            shape=(0, 2),
-            chunks=(chunk_size, 2),
-            dtype="int32",
-            compressors=compressors,
-          )
-          group.attrs["complete"] = False
-
-        if tiles_ds is not None and coords_ds is not None:
-          tiles_buffer.append(arr)
-          coords_buffer.append(coord_list)
-          if len(tiles_buffer) >= chunk_size:
-            tiles_ds.append(np.stack(tiles_buffer, axis=0))
-            coords_ds.append(np.asarray(coords_buffer, dtype=np.int32))
-            tiles_buffer = []
-            coords_buffer = []
-
+      for arr, coord in self._iter_from_wsi_building_cache(slide_name, wsi, writer):
         if mem_tiles_live is not None and mem_coords_live is not None:
           mem_tiles_live.append(arr)
-          mem_coords_live.append(coord_list)
-
-        yield arr, coord_list
+          mem_coords_live.append(coord)
+        yield arr, coord
+      if writer is not None:
+        writer.close(complete=True)
     finally:
+      if writer is not None:
+        # if an exception occurs mid-build, ensure we don't mark complete
+        # (writer.close called above only on success)
+        pass
       if hasattr(wsi, "close"):
         wsi.close()
-
-    if not found_tile:
-      raise RuntimeError(f"No tiles available for slide: {slide_name}")
-
-    if tiles_ds is not None and coords_ds is not None:
-      if tiles_buffer:
-        tiles_ds.append(np.stack(tiles_buffer, axis=0))
-        coords_ds.append(np.asarray(coords_buffer, dtype=np.int32))
-      group.attrs["complete"] = True
 
     if mem_tiles_live is not None and mem_coords_live is not None:
       self._put_memory_cache(slide_name, mem_tiles_live, mem_coords_live)
