@@ -1,4 +1,5 @@
 enabled: true
 registry_model_name: wsi_model
 selection_metric: val_auc
+load_selection_metric: val_iou
 tracking_uri: http://localhost:5000
