@@ -36,10 +36,21 @@ def _as_state_dict(obj: object) -> dict[str, torch.Tensor]:
                 for k, v in obj.state_dict().items()}
 
     if isinstance(obj, Mapping):
-        if "state_dict" in obj and isinstance(obj["state_dict"], Mapping):
-            return dict(obj["state_dict"])
+        for key in ("state_dict", "model_state_dict", "model", "module", "net", "weights"):
+            if key in obj and isinstance(obj[key], Mapping):
+                return dict(obj[key])
+            if key in obj and isinstance(obj[key], nn.Module):
+                return {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v
+                        for k, v in obj[key].state_dict().items()}
         if all(isinstance(v, torch.Tensor) for v in obj.values()):
             return dict(obj)
+        tensor_only = {k: v for k, v in obj.items() if isinstance(v, torch.Tensor)}
+        if tensor_only:
+            warnings.warn(
+                "Checkpoint contains non-tensor metadata; using tensor entries only.",
+                RuntimeWarning,
+            )
+            return tensor_only
 
     raise TypeError(
         f"Unsupported checkpoint payload type: {type(obj)}. "
