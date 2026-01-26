@@ -159,6 +159,29 @@ class SimpleAggregator(nn.Module):
 
 
 class LongNetViT(nn.Module):
+    """
+    LongNet-based Vision Transformer for whole-slide image analysis.
+    
+    Uses 2D sinusoidal positional embeddings on a fixed grid to encode spatial
+    relationships between image patches/tiles across the entire slide.
+    
+    Args:
+        in_chans: Input feature dimension from the tile encoder (e.g., 1536 for prov-gigapath).
+        embed_dim: Transformer embedding dimension.
+        depth: Number of transformer encoder layers.
+        slide_ngrids: Grid resolution for positional embeddings (default: 1000).
+            Creates a slide_ngrids × slide_ngrids grid for spatial encoding.
+            Must match pretrained weights if loading from checkpoint.
+            Default 1000 covers slides up to ~256K×256K pixels with 256px tiles.
+        tile_size: Size of each tile/patch in pixels (for coordinate normalization).
+        max_wsi_size: Maximum WSI dimension in pixels (affects segment lengths).
+        norm_layer: Normalization layer factory.
+        global_pool: If True, return mean-pooled features; otherwise return CLS token.
+        dropout: Dropout rate for transformer blocks.
+        drop_path_rate: Stochastic depth rate.
+        input_norm: Whether to apply LayerNorm to input features.
+        input_dropout: Dropout rate applied to input features before embedding.
+    """
     def __init__(
         self,
         in_chans: int = 1536,

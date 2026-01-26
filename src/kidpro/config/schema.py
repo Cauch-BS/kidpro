@@ -149,6 +149,10 @@ class ModelCfg(BaseModel):
   # LongNet MIL head config
   longnet_dim: int = 1536
   longnet_depth: int = 2
+  # Grid resolution for slide-level positional embeddings.
+  # Default 1000 creates a 1000×1000 grid (1M positions), covering slides up to
+  # ~256K×256K pixels with 256px tiles. Must match pretrained weights if using
+  # longnet_pretrained=true. Adjust for very large/small WSIs or memory constraints.
   longnet_slide_ngrids: int = 1000
   longnet_max_wsi_size: int = 262144
   longnet_dropout: float = 0.25
