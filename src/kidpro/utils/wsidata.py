@@ -16,6 +16,7 @@ except ImportError as exc:
 
 
 _OME_ZARR_QUIETED = False
+_OPENSLIDE_QUIETED = False
 
 
 def _quiet_ome_zarr_logs() -> None:
@@ -27,8 +28,30 @@ def _quiet_ome_zarr_logs() -> None:
     _OME_ZARR_QUIETED = True
 
 
+def _quiet_openslide_logs() -> None:
+    global _OPENSLIDE_QUIETED
+    if _OPENSLIDE_QUIETED:
+        return
+    try:
+        from openslide import lowlevel as openslide_lowlevel
+    except Exception:
+        _OPENSLIDE_QUIETED = True
+        return
+
+    def _null_handler(*_args: object, **_kwargs: object) -> None:
+        return
+
+    try:
+        openslide_lowlevel.set_error_handler(_null_handler)
+        openslide_lowlevel.set_warning_handler(_null_handler)
+    except Exception:
+        pass
+    _OPENSLIDE_QUIETED = True
+
+
 def open_wsidata(slide_path: str, store_path: Optional[Path] = None) -> WSIData:
     _quiet_ome_zarr_logs()
+    _quiet_openslide_logs()
     slide = Path(slide_path)
     if not slide.exists():
         raise FileNotFoundError(f"WSI file not found: {slide_path}")
