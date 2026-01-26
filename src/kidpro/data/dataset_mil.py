@@ -29,6 +29,8 @@ except Exception:  # pragma: no cover - optional dependency
 
 log = logging.getLogger(__name__)
 
+_TILE_EMB_CACHE_VERSION = 2
+
 
 @contextlib.contextmanager
 def _suppress_stderr() -> Iterator[None]:
@@ -242,6 +244,16 @@ class MILDataset(Dataset):
     if not group.attrs.get("tile_emb_complete", False):
       return None
 
+    # One-time cache bust: ensure old embedding caches (possibly created under
+    # stochastic augmentation / older policies) are rebuilt exactly once.
+    if group.attrs.get("tile_emb_cache_version") != _TILE_EMB_CACHE_VERSION:
+      log.info(
+        "[CACHE MISS] tile_emb_cache_version mismatch: cached=%s, expected=%s",
+        group.attrs.get("tile_emb_cache_version"),
+        _TILE_EMB_CACHE_VERSION,
+      )
+      return None
+
     # Check model hash matches (invalidate if tile_encoder changed)
     if self._tile_encoder_hash is not None:
       cached_hash = group.attrs.get("tile_emb_model_hash")
@@ -283,6 +295,7 @@ class MILDataset(Dataset):
 
     # Mark as complete and store hash
     group.attrs["tile_emb_complete"] = True
+    group.attrs["tile_emb_cache_version"] = _TILE_EMB_CACHE_VERSION
     if self._tile_encoder_hash is not None:
       group.attrs["tile_emb_model_hash"] = self._tile_encoder_hash
 
