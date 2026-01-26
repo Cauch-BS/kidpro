@@ -140,7 +140,7 @@ def run_wsi_inference(cfg: AppCfg, rr: RuntimeResolved) -> Dict[str, Any]:
 
   model = build_model_mil(cfg)
   ckpt_path, source = _resolve_wsi_weights(cfg, infer_cfg)
-  load_state_dict_generic(model, ckpt_path)
+  model = load_state_dict_generic(model, ckpt_path)
   model = model.to(rr.device)
   model.eval()
 

@@ -61,11 +61,11 @@ def build(cfg: AppCfg) -> FoundationBackbone:
         ckpt = resolve_weights_path(cfg)
         if ckpt is not None:
             if ckpt.exists():
-                load_state_dict_generic(tile_encoder, ckpt)
+                tile_encoder = load_state_dict_generic(tile_encoder, ckpt)
             elif ckpt.name == "model.pt":
                 candidate = ckpt.with_name("pytorch_model.bin")
                 if candidate.exists():
-                    load_state_dict_generic(tile_encoder, candidate)
+                    tile_encoder = load_state_dict_generic(tile_encoder, candidate)
 
     backbone = ProvGigaPathBackbone(
         tile_encoder=tile_encoder,

@@ -27,7 +27,7 @@ def build(cfg: AppCfg) -> FoundationBackbone:
 
     ckpt = resolve_weights_path(cfg)
     if ckpt is not None:
-        load_state_dict_generic(backbone, ckpt)
+        backbone = load_state_dict_generic(backbone, ckpt)
 
     feat_dim = infer_feat_dim(backbone, cfg)
     return FoundationBackbone(backbone=backbone, feat_dim=feat_dim)

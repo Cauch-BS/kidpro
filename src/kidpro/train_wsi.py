@@ -71,7 +71,7 @@ def main(hcfg: DictConfig) -> None:
   if cfg.model.lora.enabled:
     try:
       ckpt_path = resolve_best_model_from_mlflow(cfg, "tile_model")
-      load_state_dict_generic(cast(nn.Module, model.tile_encoder), ckpt_path)
+      model.tile_encoder = load_state_dict_generic(cast(nn.Module, model.tile_encoder), ckpt_path)
       log.info(f"[LORA INIT] Loaded tile checkpoint: {ckpt_path}")
     except Exception as e:
       raise RuntimeError(

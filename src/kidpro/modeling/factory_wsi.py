@@ -3,8 +3,7 @@ from __future__ import annotations
 from torch.nn import Module
 
 from ..config.schema import AppCfg
-
-# from .lora import apply_lora
+from .lora import apply_lora
 from .sources import build_foundation, freeze_module
 
 
@@ -23,9 +22,9 @@ def build_model_mil(cfg: AppCfg) -> Module:
   tile_encoder = getattr(backbone, "tile_encoder", backbone)
 
   if cfg.model.lora.enabled:
-    # tile_encoder = apply_lora(cfg, tile_encoder, freeze_base=True)
     # MIL should not fine-tune the tiling model, even with LoRA enabled.
     # fine-tuning the tiling model should only occur during tile segmentation training.
+    tile_encoder = apply_lora(cfg, tile_encoder, freeze_base=True)
     freeze_module(tile_encoder)
     if getattr(backbone, "tile_encoder", None) is not None:
       backbone.tile_encoder = tile_encoder

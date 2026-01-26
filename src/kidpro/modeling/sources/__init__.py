@@ -5,7 +5,7 @@ import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 import torch
 import torch.nn as nn
@@ -46,7 +46,20 @@ def _as_state_dict(obj: object) -> dict[str, torch.Tensor]:
         "Expected state_dict-like mapping or {'state_dict': ...}."
     )
 
-def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> None:
+def _strip_module_prefix(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    if state and all(k.startswith("module.") for k in state):
+        return {k[len("module."):] : v for k, v in state.items()}
+    return dict(state)
+
+
+def _has_lora_keys(state: Mapping[str, torch.Tensor]) -> bool:
+    for k in state.keys():
+        if "lora_" in k or "modules_to_save" in k:
+            return True
+    return False
+
+
+def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> nn.Module:
     ckpt_path = Path(ckpt_path)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
@@ -79,6 +92,29 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> None:
             ) from e
 
         state = _as_state_dict(obj)
+
+    state = _strip_module_prefix(state)
+    has_lora = _has_lora_keys(state)
+
+    if has_lora and callable(getattr(model, "merge_and_unload", None)):
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        merged = model.merge_and_unload()
+        if merged is None:
+            merged = model
+        print(
+            "[FND CKPT]",
+            "peft_merge=1",
+            f"missing={len(missing)} (showing up to 8): {missing[:8]}",
+            f"unexpected={len(unexpected)} (showing up to 8): {unexpected[:8]}",
+        )
+        return cast(nn.Module, merged)
+
+    if has_lora:
+        warnings.warn(
+            "LoRA weights found in checkpoint, but model is not a PEFT model. "
+            "Dropping LoRA adapters.",
+            RuntimeWarning,
+        )
 
     head_prefixes = ("fc.", "classifier.", "head.", "last_linear.")
     filtered = {k: v for k, v in state.items() if not k.startswith(head_prefixes)}
@@ -136,6 +172,7 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> None:
         f"missing={len(missing)} (showing up to 8): {missing[:8]}",
         f"unexpected={len(unexpected)} (showing up to 8): {unexpected[:8]}",
     )
+    return model
 
 
 def resolve_weights_path(cfg: AppCfg) -> Optional[Path]:
