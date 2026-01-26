@@ -166,8 +166,9 @@ class MILDataset(Dataset):
 
   def set_tile_encoder_hash(self, hash_str: str) -> None:
     """Set the tile encoder hash for cache invalidation."""
+    if self._tile_encoder_hash == hash_str:
+      return
     self._tile_encoder_hash = hash_str
-    log.info("[MILDataset] tile_encoder_hash set to: %s", hash_str)
 
   def _pooled_emb_enabled(self) -> bool:
     return bool(self.cache_cfg.enabled and self.cache_cfg.cache_pooled_embeddings)
@@ -269,7 +270,6 @@ class MILDataset(Dataset):
       "tile_embeddings",
       data=embeddings,
       chunks=(min(64, embeddings.shape[0]), embeddings.shape[1]) if embeddings.ndim == 2 else embeddings.shape,
-      dtype=embeddings.dtype,
     )
 
     # Write coords
@@ -279,7 +279,6 @@ class MILDataset(Dataset):
       "tile_coords",
       data=coords,
       chunks=(min(64, coords.shape[0]), coords.shape[1]) if coords.ndim == 2 else coords.shape,
-      dtype=coords.dtype,
     )
 
     # Mark as complete and store hash
