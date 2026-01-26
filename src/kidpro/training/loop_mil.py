@@ -12,6 +12,7 @@ import torch.nn as nn
 import torch.optim as optim
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
     confusion_matrix,
     f1_score,
     precision_score,
@@ -210,6 +211,8 @@ def evaluate_mil(
   y_true: list[int] = []
   y_prob: list[float] = []
   y_pred: list[int] = []
+  pos_logits: list[float] = []
+  margins: list[float] = []
 
   if skipped_slides is None:
     skipped_slides = set()
@@ -242,6 +245,15 @@ def evaluate_mil(
     prob = torch.softmax(logits, dim=1)[:, 1]
     pred = torch.argmax(logits, dim=1)
 
+    # Diagnostics: logits statistics (pos logit and pos-neg margin)
+    with torch.no_grad():
+      logits_1x2 = logits.detach().float().view(-1)
+      if logits_1x2.numel() >= 2:
+        neg_logit = float(logits_1x2[0].item())
+        pos_logit = float(logits_1x2[1].item())
+        pos_logits.append(pos_logit)
+        margins.append(pos_logit - neg_logit)
+
     y_true.append(int(y.item()))
     y_prob.append(float(prob.item()))
     y_pred.append(int(pred.item()))
@@ -260,6 +272,18 @@ def evaluate_mil(
       "true_pos_rate": 0.0,
       "precision": 0.0,
       "recall": 0.0,
+      "pr_auc": None,
+      "prob_min": None,
+      "prob_mean": None,
+      "prob_max": None,
+      "prob_lt_001_rate": None,
+      "prob_gt_099_rate": None,
+      "pos_logit_min": None,
+      "pos_logit_mean": None,
+      "pos_logit_max": None,
+      "margin_min": None,
+      "margin_mean": None,
+      "margin_max": None,
       "best_thr": 0.5,
       "f1_at_best_thr": 0.0,
       "f1_at_0.5": 0.0,
@@ -278,6 +302,11 @@ def evaluate_mil(
   if len(set(y_true)) > 1:
     auc = float(roc_auc_score(y_true, y_prob))
 
+  # PR-AUC (average precision; only if both classes present)
+  pr_auc: Optional[float] = None
+  if len(set(y_true)) > 1:
+    pr_auc = float(average_precision_score(y_true, y_prob))
+
   # Confusion matrix and counts
   cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
   true_counts = {0: int(np.sum(y_true_arr == 0)), 1: int(np.sum(y_true_arr == 1))}
@@ -291,6 +320,22 @@ def evaluate_mil(
   precision = float(precision_score(y_true, y_pred, zero_division=0))
   recall = float(recall_score(y_true, y_pred, zero_division=0))
 
+  # Score distribution diagnostics
+  prob_min = float(np.min(y_prob_arr))
+  prob_mean = float(np.mean(y_prob_arr))
+  prob_max = float(np.max(y_prob_arr))
+  prob_lt_001_rate = float(np.mean(y_prob_arr < 0.01))
+  prob_gt_099_rate = float(np.mean(y_prob_arr > 0.99))
+
+  pos_logits_arr = np.array(pos_logits, dtype=np.float32) if pos_logits else np.array([], dtype=np.float32)
+  margins_arr = np.array(margins, dtype=np.float32) if margins else np.array([], dtype=np.float32)
+  pos_logit_min = float(np.min(pos_logits_arr)) if pos_logits_arr.size else None
+  pos_logit_mean = float(np.mean(pos_logits_arr)) if pos_logits_arr.size else None
+  pos_logit_max = float(np.max(pos_logits_arr)) if pos_logits_arr.size else None
+  margin_min = float(np.min(margins_arr)) if margins_arr.size else None
+  margin_mean = float(np.mean(margins_arr)) if margins_arr.size else None
+  margin_max = float(np.max(margins_arr)) if margins_arr.size else None
+
   # Threshold tuning
   best_thr, f1_at_best_thr = _find_best_threshold(y_true, y_prob)
 
@@ -302,6 +347,7 @@ def evaluate_mil(
     "acc": float(acc),
     "macro_f1": float(macro_f1),
     "auc": auc,
+    "pr_auc": pr_auc,
     "cm": cm,
     "true_counts": true_counts,
     "pred_counts": pred_counts,
@@ -309,6 +355,17 @@ def evaluate_mil(
     "true_pos_rate": true_pos_rate,
     "precision": precision,
     "recall": recall,
+    "prob_min": prob_min,
+    "prob_mean": prob_mean,
+    "prob_max": prob_max,
+    "prob_lt_001_rate": prob_lt_001_rate,
+    "prob_gt_099_rate": prob_gt_099_rate,
+    "pos_logit_min": pos_logit_min,
+    "pos_logit_mean": pos_logit_mean,
+    "pos_logit_max": pos_logit_max,
+    "margin_min": margin_min,
+    "margin_mean": margin_mean,
+    "margin_max": margin_max,
     "best_thr": best_thr,
     "f1_at_best_thr": f1_at_best_thr,
     "f1_at_0.5": f1_at_05,
@@ -515,7 +572,8 @@ def fit_mil(
     log.info(
       f"Epoch {epoch+1}/{epochs} | "
       f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | "
-      f"val_acc={metrics['acc']:.4f} | val_macro_f1={metrics['macro_f1']:.4f} | val_auc={auc_str} | "
+      f"val_acc={metrics['acc']:.4f} | val_macro_f1={metrics['macro_f1']:.4f} | "
+      f"val_auc={auc_str} | val_pr_auc={metrics.get('pr_auc', None)} | "
       f"best_{es_metric}={best_score_str} | best_epoch={best_epoch} | "
       f"patience={stopper.counter}/{stopper.patience} | lr={current_lr:.2e}"
     )
@@ -531,6 +589,19 @@ def fit_mil(
         "Val precision=%.4f | recall=%.4f | f1@0.5=%.4f | best_thr=%.3f | f1@best_thr=%.4f",
         metrics["precision"], metrics["recall"], metrics["f1_at_0.5"],
         metrics["best_thr"], metrics["f1_at_best_thr"]
+      )
+      pr_auc = metrics.get("pr_auc", None)
+      if pr_auc is not None:
+        log.info("Val PR-AUC=%.4f", float(pr_auc))
+      log.info(
+        "Val prob[min/mean/max]=%.4f/%.4f/%.4f | prob<0.01=%.3f | prob>0.99=%.3f",
+        metrics["prob_min"], metrics["prob_mean"], metrics["prob_max"],
+        metrics["prob_lt_001_rate"], metrics["prob_gt_099_rate"],
+      )
+      log.info(
+        "Val pos_logit[min/mean/max]=%s/%s/%s | margin(min/mean/max)=%s/%s/%s",
+        metrics.get("pos_logit_min"), metrics.get("pos_logit_mean"), metrics.get("pos_logit_max"),
+        metrics.get("margin_min"), metrics.get("margin_mean"), metrics.get("margin_max"),
       )
       log.info("Val confusion_matrix:\n%s", metrics["cm"])
 
