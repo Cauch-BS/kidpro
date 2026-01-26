@@ -83,7 +83,16 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> None:
     head_prefixes = ("fc.", "classifier.", "head.", "last_linear.")
     filtered = {k: v for k, v in state.items() if not k.startswith(head_prefixes)}
 
-    prefixes = ("module.", "model.", "backbone.", "tile_encoder.", "base_model.model.")
+    prefixes = (
+        "module.",
+        "model.",
+        "backbone.",
+        "tile_encoder.",
+        "tile_encoder.base_model.",
+        "tile_encoder.base_model.model.",
+        "base_model.",
+        "base_model.model.",
+    )
     stripped: dict[str, torch.Tensor] = {}
     collisions: list[tuple[str, str]] = []
     dropped_lora = 0
