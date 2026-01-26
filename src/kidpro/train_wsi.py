@@ -75,6 +75,19 @@ def main(hcfg: DictConfig) -> None:
     sampler = WeightedRandomSampler(sample_weights, num_samples=len(df_tr), replacement=True)
     log.info("[BALANCED SAMPLING] Class counts: %s", class_counts.to_dict())
 
+  # NOTE:
+  # Using BOTH a balanced sampler and class-weighted loss "double counts" imbalance handling:
+  # - The sampler changes the *data distribution* the optimizer sees (expected gradient)
+  # - The loss weights scale per-example gradients
+  # If the sampler already makes classes ~uniform, additional class weights will generally
+  # overweight the minority class and can bias training toward predicting that class.
+  effective_use_class_weights = bool(cfg.train.use_class_weights) and (sampler is None)
+  if cfg.train.use_balanced_sampling and cfg.train.use_class_weights:
+    log.warning(
+      "[IMBALANCE HANDLING] Both use_balanced_sampling=true and use_class_weights=true. "
+      "Disabling class weights because a balanced sampler is already in use."
+    )
+
   dl_tr = torch.utils.data.DataLoader(
     ds_tr,
     batch_size=1,
@@ -119,7 +132,7 @@ def main(hcfg: DictConfig) -> None:
   # -------------------------
   # Class-weighted loss (optional)
   # -------------------------
-  if cfg.train.use_class_weights:
+  if effective_use_class_weights:
     num_classes = int(getattr(cfg.dataset.task, "num_classes", 2))
     class_counts = df_tr["GT"].value_counts().reindex(range(num_classes), fill_value=0).sort_index()
     total = len(df_tr)

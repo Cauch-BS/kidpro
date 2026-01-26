@@ -4,7 +4,7 @@ lr: 1e-4
 seed: 42
 
 # Class imbalance handling
-use_class_weights: true
+use_class_weights: false
 use_balanced_sampling: true
 
 # Optimizer settings

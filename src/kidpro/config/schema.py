@@ -307,7 +307,8 @@ class TrainCfg(BaseModel):
   early_stopping: EarlyStoppingCfg = Field(default_factory=EarlyStoppingCfg)
 
   # Class imbalance handling
-  use_class_weights: bool = True
+  # Default to a single mechanism to avoid "double compensation".
+  use_class_weights: bool = False
   use_balanced_sampling: bool = True
 
   # Optimizer settings
