@@ -130,7 +130,13 @@ def _stream_slide_logits(
 
 
 @torch.no_grad()
-def evaluate_mil(cfg: AppCfg, rr: RuntimeResolved, model: nn.Module, loader: DataLoader) -> Dict[str, Any]:
+def evaluate_mil(
+  cfg: AppCfg,
+  rr: RuntimeResolved,
+  model: nn.Module,
+  loader: DataLoader,
+  skipped_slides: Optional[set[str]] = None,
+) -> Dict[str, Any]:
   """
   Evaluate MIL model on a validation/test set.
 
@@ -148,6 +154,9 @@ def evaluate_mil(cfg: AppCfg, rr: RuntimeResolved, model: nn.Module, loader: Dat
   y_prob: list[float] = []
   y_pred: list[int] = []
 
+  if skipped_slides is None:
+    skipped_slides = set()
+
   for batch in tqdm(loader, desc="Eval", leave=False):
     x, y, coords, _slide = _unpack_mil_batch(batch)
     x = _unwrap_singleton(x)
@@ -158,7 +167,10 @@ def evaluate_mil(cfg: AppCfg, rr: RuntimeResolved, model: nn.Module, loader: Dat
         logits, _tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony=True)
       except RuntimeError as exc:
         if _is_skippable_tile_error(exc):
-          log.warning("Skipping slide %s during eval: %s", _slide, exc)
+          slide_name = str(_slide)
+          if slide_name not in skipped_slides:
+            log.warning("Skipping slide %s during eval: %s", slide_name, exc)
+            skipped_slides.add(slide_name)
           continue
         raise RuntimeError(f"Error during evaluation: {exc}")
     else:
@@ -190,7 +202,16 @@ def evaluate_mil(cfg: AppCfg, rr: RuntimeResolved, model: nn.Module, loader: Dat
     auc = float(roc_auc_score(y_true, y_prob))
 
   cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-  return {"acc": float(acc), "macro_f1": float(macro_f1), "auc": auc, "cm": cm}
+  true_counts = {0: int(np.sum(np.asarray(y_true) == 0)), 1: int(np.sum(np.asarray(y_true) == 1))}
+  pred_counts = {0: int(np.sum(np.asarray(y_pred) == 0)), 1: int(np.sum(np.asarray(y_pred) == 1))}
+  return {
+    "acc": float(acc),
+    "macro_f1": float(macro_f1),
+    "auc": auc,
+    "cm": cm,
+    "true_counts": true_counts,
+    "pred_counts": pred_counts,
+  }
 
 
 def fit_mil(
@@ -235,6 +256,9 @@ def fit_mil(
   best_epoch: int = -1  # 1-based when reported
 
   asynchrony: bool = cfg.dataset.data.pin_memory
+  skipped_train_slides: set[str] = set()
+  skipped_val_slides: set[str] = set()
+  skipped_eval_slides: set[str] = set()
 
   for epoch in range(cfg.train.epochs):
     # -------------------------
@@ -256,7 +280,10 @@ def fit_mil(
           logits, tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
         except RuntimeError as exc:
           if _is_skippable_tile_error(exc):
-            log.warning("Skipping slide %s during training: %s", _slide, exc)
+            slide_name = str(_slide)
+            if slide_name not in skipped_train_slides:
+              log.warning("Skipping slide %s during training: %s", slide_name, exc)
+              skipped_train_slides.add(slide_name)
             continue
           raise RuntimeError(f"Error during training: {exc}")
         loss = criterion(logits, y)
@@ -301,7 +328,10 @@ def fit_mil(
             logits, _tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
           except RuntimeError as exc:
             if _is_skippable_tile_error(exc):
-              log.warning("Skipping slide %s during val loss: %s", _slide, exc)
+              slide_name = str(_slide)
+              if slide_name not in skipped_val_slides:
+                log.warning("Skipping slide %s during val loss: %s", slide_name, exc)
+                skipped_val_slides.add(slide_name)
               continue
             raise RuntimeError(f"Error during validation: {exc}")
           loss = criterion(logits, y)
@@ -323,7 +353,7 @@ def fit_mil(
     # -------------------------
     # Val metrics
     # -------------------------
-    metrics = evaluate_mil(cfg, rr, model, val_loader)
+    metrics = evaluate_mil(cfg, rr, model, val_loader, skipped_slides=skipped_eval_slides)
     auc = metrics.get("auc", None)
     val_auc = float(auc) if isinstance(auc, (float, int)) else -math.inf
     auc_str = f"{val_auc:.4f}" if math.isfinite(val_auc) else "None"
@@ -348,6 +378,10 @@ def fit_mil(
       f"best_val_auc={best_auc_str} | best_epoch={best_epoch} | "
       f"patience={stopper_loss.counter}/{stopper_loss.patience}"
     )
+    true_counts = metrics.get("true_counts")
+    pred_counts = metrics.get("pred_counts")
+    if isinstance(true_counts, dict) and isinstance(pred_counts, dict):
+      log.info("Val class counts: %s | pred counts: %s | cm=%s", true_counts, pred_counts, metrics["cm"])
 
     # -------------------------
     # Early stopping: minimize val_loss
