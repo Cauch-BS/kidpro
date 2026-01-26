@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import pickle
 import warnings
 from collections.abc import Mapping
@@ -11,6 +12,8 @@ import torch
 import torch.nn as nn
 
 from ...config.schema import AppCfg
+
+logger = logging.getLogger(__name__)
 
 
 # -------------------------
@@ -103,10 +106,9 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> nn.Module:
             except TypeError:
                 obj = torch.load(str(ckpt_path), map_location="cpu")
         except (pickle.UnpicklingError, RuntimeError) as e:
-            warnings.warn(
-                "Checkpoint requires pickle deserialization (full object). "
-                "Retrying with weights_only=False. Do this only for trusted checkpoints.",
-                RuntimeWarning,
+            logger.warning(
+                "[WARNING] Checkpoint requires pickle deserialization (full object). "
+                "Retrying with weights_only=False. Do this only for trusted checkpoints."
             )
             obj = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
         except Exception as e:

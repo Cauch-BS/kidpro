@@ -22,6 +22,7 @@ class PathsCfg(BaseModel):
   # MIL-only
   label_csv: Optional[Path] = None
   cache_dir: Optional[Path] = None
+  wsi_cache_dir: Optional[Path] = None
   tiles_key: str = "tiles"
   wsi_dir: Optional[Path] = None
   wsi_ext: str = ".svs"

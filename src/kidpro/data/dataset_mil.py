@@ -115,6 +115,11 @@ class MILDataset(Dataset):
       raise ValueError("MILDataset requires task.type == 'mil'")
     self.df = df_slide.reset_index(drop=True)
     self.cache_root = Path(cfg.dataset.paths.cache_dir) if cfg.dataset.paths.cache_dir else None
+    self.wsi_cache_root = (
+      Path(cfg.dataset.paths.wsi_cache_dir)
+      if cfg.dataset.paths.wsi_cache_dir
+      else self.cache_root
+    )
     self.tiles_key = cfg.dataset.paths.tiles_key
     self.transform = transform
     self.cache_cfg: MILCacheCfg = cfg.dataset.data.mil_cache
@@ -146,9 +151,11 @@ class MILDataset(Dataset):
     if cached is not None:
       return cached
 
-    if self.cache_root is None:
-      raise RuntimeError("dataset.paths.cache_dir is required for MIL wsidata loading.")
-    cache_path = self.cache_root / f"{slide_name}.zarr"
+    if self.wsi_cache_root is None:
+      raise RuntimeError(
+        "dataset.paths.wsi_cache_dir (or dataset.paths.cache_dir) is required for MIL wsidata loading."
+      )
+    cache_path = self.wsi_cache_root / f"{slide_name}.zarr"
     self._cache_paths[slide_name] = cache_path
     return cache_path
 
@@ -355,7 +362,12 @@ class MILDataset(Dataset):
     # 3) build path: stream from WSI; optionally write cache
     cache_path_wsi = self._resolve_cache_path(slide_name)
     if not cache_path_wsi.exists():
-      raise RuntimeError(f"Missing wsidata cache for slide {slide_name}: {cache_path_wsi}")
+      raise RuntimeError(
+        "Missing wsidata cache for slide "
+        f"{slide_name}: {cache_path_wsi}. "
+        "Run preprocessing to create wsidata caches or update "
+        "dataset.paths.wsi_cache_dir (or dataset.paths.cache_dir)."
+      )
 
     slide_path = self._resolve_slide_path(slide_name)
     wsi = open_wsidata(str(slide_path), cache_path_wsi)
