@@ -2,11 +2,16 @@ name: prov_gigapath
 arch: prov_gigapath
 
 # --- LongNet MIL head knobs ---
-longnet_dim: 1024
-longnet_depth: 24
+longnet_dim: 768
+longnet_depth: 12
 longnet_slide_ngrids: 1000
 longnet_max_wsi_size: 262144
 longnet_dropout: 0.25
+longnet_pretrained: true
+longnet_weights:
+  source: local
+  local_path: /home/khdp-user/workspace/huggingface_cache/prov_gigapath/slide_encoder.pth
+  hf_cache_path: /home/khdp-user/workspace/huggingface_cache
 
 num_classes: 2
 in_channels: 3

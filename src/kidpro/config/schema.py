@@ -121,6 +121,8 @@ class ModelCfg(BaseModel):
 
   # Optional weights (used by timm/prov/uni2_h as appropriate)
   weights: Optional[WeightsCfg] = None
+  longnet_pretrained: bool = False
+  longnet_weights: Optional[WeightsCfg] = None
   lora: LoraCfg = Field(default_factory=LoraCfg)
 
   # Unet-specific
@@ -156,6 +158,8 @@ class ModelCfg(BaseModel):
       if not self.arch:
         raise ValueError(f"model.arch is required when model.name='{self.name}'.")
 
+    if self.longnet_pretrained and self.longnet_weights is None:
+      raise ValueError("model.longnet_weights is required when model.longnet_pretrained is true.")
 
     if self.longnet_dim <= 0:
       raise ValueError("model.longnet_dim must be > 0.")
