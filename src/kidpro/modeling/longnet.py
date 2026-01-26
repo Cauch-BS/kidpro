@@ -64,12 +64,14 @@ class SimpleAggregator(nn.Module):
         x: torch.Tensor,
         coords: torch.Tensor | None = None,
         all_layer_embed: bool = False,
+        **kwargs: Any,  # Accept extra kwargs from PEFT wrapper (e.g., input_ids)
     ) -> list[torch.Tensor]:
         """
         Args:
             x: Tile embeddings of shape (batch, num_tiles, in_dim) or (num_tiles, in_dim)
             coords: Tile coordinates (ignored for simple pooling)
             all_layer_embed: Whether to return all layer embeddings (ignored, returns single embedding)
+            **kwargs: Extra keyword arguments (ignored, for PEFT compatibility)
 
         Returns:
             List containing single pooled embedding of shape (batch, embed_dim)
@@ -218,6 +220,7 @@ class LongNetViT(nn.Module):
         x: torch.Tensor,
         coords: torch.Tensor,
         all_layer_embed: bool = False,
+        **kwargs: Any,  # Accept extra kwargs from PEFT wrapper (e.g., input_ids)
     ) -> list[torch.Tensor]:
         # Apply input conditioning
         x = self.input_norm(x)
