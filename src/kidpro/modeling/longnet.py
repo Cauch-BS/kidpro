@@ -141,11 +141,20 @@ class LongNetMIL(nn.Module):
     def encode_tiles(self, x: torch.Tensor) -> torch.Tensor:
         return cast(torch.Tensor, self.tile_encoder(x))
 
-    def encode_slide(self, feats: torch.Tensor, coords: torch.Tensor | None = None) -> torch.Tensor:
+    def encode_slide_embedding(
+        self, feats: torch.Tensor, coords: torch.Tensor | None = None
+    ) -> torch.Tensor:
         if coords is None:
             raise ValueError("coords are required for LongNetMIL.")
         slide_out = self.slide_encoder(feats.unsqueeze(0), coords.unsqueeze(0))[-1]
-        return self.classifier(slide_out) # type: ignore
+        return cast(torch.Tensor, slide_out)
+
+    def classify_slide_embedding(self, embedding: torch.Tensor) -> torch.Tensor:
+        return cast(torch.Tensor, self.classifier(embedding))
+
+    def encode_slide(self, feats: torch.Tensor, coords: torch.Tensor | None = None) -> torch.Tensor:
+        slide_out = self.encode_slide_embedding(feats, coords)
+        return self.classify_slide_embedding(slide_out)
 
     def forward(self, x: torch.Tensor, coords: torch.Tensor | None = None) -> torch.Tensor:
         feats = self.encode_tiles(x)

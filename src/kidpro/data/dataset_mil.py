@@ -3,14 +3,14 @@ from __future__ import annotations
 import logging
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional, cast
+from typing import Any, Callable, Iterable, Literal, Optional, cast
 
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, get_worker_info
 
-from ..config.schema import AppCfg
+from ..config.schema import AppCfg, MILCacheCfg
 from ..utils.wsidata import extract_tile_xy, open_wsidata, tile_image_to_array
 
 try:
@@ -48,6 +48,12 @@ class TileStream:
         batch_coords = []
     if batch_imgs:
       yield self._dataset._stack_tiles(batch_imgs), torch.stack(batch_coords, dim=0)
+
+  def get_cached_pooled_embedding(self) -> Optional[tuple[np.ndarray, int]]:
+    return self._dataset._get_cached_pooled_embedding(self.slide_name)
+
+  def set_cached_pooled_embedding(self, embedding: np.ndarray, tile_count: int) -> None:
+    self._dataset._set_cached_pooled_embedding(self.slide_name, embedding, tile_count)
 
 
 class _ZarrTileWriter:
@@ -111,7 +117,9 @@ class MILDataset(Dataset):
     self.cache_root = Path(cfg.dataset.paths.cache_dir) if cfg.dataset.paths.cache_dir else None
     self.tiles_key = cfg.dataset.paths.tiles_key
     self.transform = transform
-    self.cache_cfg = cfg.dataset.data.mil_cache
+    self.cache_cfg: MILCacheCfg = cfg.dataset.data.mil_cache
+    self.pooled_emb_key = self.cache_cfg.pooled_embeddings_key
+    self.pooled_emb_tag = self.cache_cfg.pooled_embeddings_tag
     self.wsi_dir = Path(cfg.dataset.paths.wsi_dir) if cfg.dataset.paths.wsi_dir else None
     self.wsi_ext = cfg.dataset.paths.wsi_ext or ".svs"
     if not self.wsi_ext.startswith("."):
@@ -126,6 +134,9 @@ class MILDataset(Dataset):
     for c in ["SlideName", "GT", "split"]:
       if c not in self.df.columns:
         raise ValueError(f"Missing required column: {c}")
+
+  def _pooled_emb_enabled(self) -> bool:
+    return bool(self.cache_cfg.enabled and self.cache_cfg.cache_pooled_embeddings)
 
   def __len__(self) -> int:
     return len(self.df)
@@ -182,11 +193,71 @@ class MILDataset(Dataset):
     while len(self._memory_cache) > self.cache_cfg.memory_max_slides:
       self._memory_cache.popitem(last=False)
 
-  def _open_zarr_group(self, cache_path: Path, mode: str) -> Any:
+  def _open_zarr_group(self, cache_path: Path, mode: Literal["r", "r+", "a", "w", "w-"]) -> Any:
     if zarr is None:
       raise RuntimeError("zarr is required for MIL tile caching.")
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     return zarr.open_group(str(cache_path), mode=mode)
+
+  def _read_pooled_embedding(self, group: Any) -> Optional[tuple[np.ndarray, int]]:
+    if not group.attrs.get("pooled_emb_complete", False):
+      return None
+    if self.pooled_emb_tag is None:
+      return None
+    if group.attrs.get("pooled_emb_tag") != self.pooled_emb_tag:
+      return None
+    if self.pooled_emb_key not in group:
+      return None
+    emb = np.asarray(group[self.pooled_emb_key])
+    tile_count = int(group.attrs.get("pooled_emb_tile_count", 0))
+    return emb, tile_count
+
+  def _write_pooled_embedding(self, group: Any, embedding: np.ndarray, tile_count: int) -> None:
+    emb = np.asarray(embedding, dtype=np.float32).reshape(-1)
+    if self.pooled_emb_key in group:
+      ds = group[self.pooled_emb_key]
+      if tuple(getattr(ds, "shape", ())) != emb.shape:
+        del group[self.pooled_emb_key]
+        ds = group.create_array(
+          self.pooled_emb_key,
+          shape=emb.shape,
+          chunks=emb.shape,
+          dtype=emb.dtype,
+        )
+      ds[...] = emb
+    else:
+      ds = group.create_array(
+        self.pooled_emb_key,
+        shape=emb.shape,
+        chunks=emb.shape,
+        dtype=emb.dtype,
+      )
+      ds[...] = emb
+    group.attrs["pooled_emb_complete"] = True
+    if self.pooled_emb_tag is not None:
+      group.attrs["pooled_emb_tag"] = self.pooled_emb_tag
+    group.attrs["pooled_emb_tile_count"] = int(tile_count)
+
+  def _get_cached_pooled_embedding(self, slide_name: str) -> Optional[tuple[np.ndarray, int]]:
+    if not self._pooled_emb_enabled():
+      return None
+    cache_path = self._zarr_cache_path(slide_name)
+    if cache_path is None or not cache_path.exists():
+      return None
+    group = self._open_zarr_group(cache_path, mode="r")
+    return self._read_pooled_embedding(group)
+
+  def _set_cached_pooled_embedding(self, slide_name: str, embedding: np.ndarray, tile_count: int) -> None:
+    if not self._pooled_emb_enabled():
+      return
+    worker_info = get_worker_info()
+    if worker_info is not None:
+      return
+    cache_path = self._zarr_cache_path(slide_name)
+    if cache_path is None:
+      return
+    group = self._open_zarr_group(cache_path, mode="a")
+    self._write_pooled_embedding(group, embedding, tile_count)
 
   def _safe_iter_tiles(self, wsi: Any, slide_name: str) -> Iterable[Any]:
     it = iter(wsi.iter.tile_images(self.tiles_key))
@@ -320,7 +391,7 @@ class MILDataset(Dataset):
       img = self.transform(image=arr)["image"]
       if not isinstance(img, torch.Tensor):
         img = torch.from_numpy(img)
-      return img
+      return cast(torch.Tensor, img)
     return torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0
 
   def _stack_tiles(self, imgs: list[torch.Tensor]) -> torch.Tensor:

@@ -1,6 +1,6 @@
 paths:
   root_dir: /home/khdp-user/workspace/output/MIL_patch
-  cache_dir: /home/khdp-user/workspace/output/MIL_cache
+  cache_dir: /home/khdp-user/workspace/output
   runs_root: /home/khdp-user/workspace/output/MIL_run_cls
   csv_name: dataset.csv
   label_csv: /home/khdp-user/workspace/dataset/CSV/GT_label.csv
@@ -28,3 +28,6 @@ data:
     chunk_size: 64
     compression: none
     memory_max_slides: 0
+    cache_pooled_embeddings: true
+    pooled_embeddings_key: pooled_emb
+    pooled_embeddings_tag: null

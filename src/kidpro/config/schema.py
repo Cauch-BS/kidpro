@@ -179,6 +179,9 @@ class MILCacheCfg(BaseModel):
   chunk_size: int = 64
   compression: Literal["none", "blosc"] = "none"
   memory_max_slides: int = 0
+  cache_pooled_embeddings: bool = False
+  pooled_embeddings_key: str = "pooled_emb"
+  pooled_embeddings_tag: Optional[str] = None
 
   @model_validator(mode="after")
   def _validate(self) -> "MILCacheCfg":
@@ -188,6 +191,8 @@ class MILCacheCfg(BaseModel):
       raise ValueError("data.mil_cache.chunk_size must be > 0.")
     if self.memory_max_slides < 0:
       raise ValueError("data.mil_cache.memory_max_slides must be >= 0.")
+    if not self.pooled_embeddings_key:
+      raise ValueError("data.mil_cache.pooled_embeddings_key must be non-empty.")
     return self
 
 

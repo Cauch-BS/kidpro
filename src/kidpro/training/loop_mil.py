@@ -71,12 +71,23 @@ def _stream_slide_logits(
 ) -> tuple[torch.Tensor, int]:
   if not hasattr(tile_stream, "iter_batches"):
     raise ValueError("Expected a tile stream with iter_batches().")
+  cached = None
+  if hasattr(tile_stream, "get_cached_pooled_embedding"):
+    cached = tile_stream.get_cached_pooled_embedding()
+  if cached is not None and hasattr(model, "classify_slide_embedding"):
+    emb_np, tile_count = cached
+    emb_t = torch.from_numpy(emb_np).to(rr.device)
+    if emb_t.ndim == 1:
+      emb_t = emb_t.unsqueeze(0)
+    logits = model.classify_slide_embedding(emb_t)  # type: ignore
+    return logits, tile_count
   chunk_size = cfg.dataset.data.mil_cache.chunk_size
   feats_list: list[torch.Tensor] = []
   coords_list: list[torch.Tensor] = []
   tile_count = 0
   encode_tiles = getattr(model, "encode_tiles", None)
   encode_slide = getattr(model, "encode_slide", None)
+  encode_slide_embedding = getattr(model, "encode_slide_embedding", None)
 
   for tiles, coords in tile_stream.iter_batches(chunk_size):
     tiles = tiles.to(rr.device, non_blocking=asynchrony)
@@ -99,9 +110,22 @@ def _stream_slide_logits(
   coords_all = torch.cat(coords_list, dim=0)
   if use_amp and autocast is not None:
     with autocast(device_type="cuda"):
-      logits = encode_slide(feats_all, coords_all) if callable(encode_slide) else model(feats_all, coords_all)
+      if callable(encode_slide_embedding) and hasattr(model, "classify_slide_embedding"):
+        emb = encode_slide_embedding(feats_all, coords_all)
+        logits = model.classify_slide_embedding(emb)  # type: ignore
+      else:
+        logits = encode_slide(feats_all, coords_all) if callable(encode_slide) else model(feats_all, coords_all)
   else:
-    logits = encode_slide(feats_all, coords_all) if callable(encode_slide) else model(feats_all, coords_all)
+    if callable(encode_slide_embedding) and hasattr(model, "classify_slide_embedding"):
+      emb = encode_slide_embedding(feats_all, coords_all)
+      logits = model.classify_slide_embedding(emb)  # type: ignore
+    else:
+      logits = encode_slide(feats_all, coords_all) if callable(encode_slide) else model(feats_all, coords_all)
+  if hasattr(tile_stream, "set_cached_pooled_embedding") and "emb" in locals():
+    try:
+      tile_stream.set_cached_pooled_embedding(emb.detach().cpu().numpy().squeeze(0), tile_count)
+    except Exception as exc:
+      log.warning("Failed to cache pooled embedding for slide: %s", exc)
   return logits, tile_count
 
 
