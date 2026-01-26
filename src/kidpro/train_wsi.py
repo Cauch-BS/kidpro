@@ -60,10 +60,12 @@ def main(hcfg: DictConfig) -> None:
   ds_tr = MILDataset(cfg, df_tr, transform=train_tf)
   ds_va = MILDataset(cfg, df_va, transform=val_tf)
 
-  def _mil_collate(batch: list[tuple[object, torch.Tensor, str]]) -> tuple[object, torch.Tensor, str]:
-    if len(batch) != 1:
-      raise ValueError("MIL collate expects batch_size=1.")
-    return batch[0]
+  def _mil_collate(
+    batch: list[tuple[object, torch.Tensor, str]],
+  ) -> list[tuple[object, torch.Tensor, str]]:
+    # Keep MIL samples as a list so we can support batch_size > 1.
+    # Each element is a (TileStream, y, slide_id) tuple.
+    return batch
 
   # -------------------------
   # Balanced sampling (optional)
@@ -90,7 +92,7 @@ def main(hcfg: DictConfig) -> None:
 
   dl_tr = torch.utils.data.DataLoader(
     ds_tr,
-    batch_size=1,
+    batch_size=int(cfg.train.batch_size),
     shuffle=(sampler is None),  # Only shuffle if no sampler
     sampler=sampler,
     num_workers=cfg.dataset.data.num_workers,
@@ -101,7 +103,7 @@ def main(hcfg: DictConfig) -> None:
   )
   dl_va = torch.utils.data.DataLoader(
     ds_va,
-    batch_size=1,
+    batch_size=int(cfg.train.batch_size),
     shuffle=False,
     num_workers=cfg.dataset.data.num_workers,
     pin_memory=cfg.dataset.data.pin_memory,

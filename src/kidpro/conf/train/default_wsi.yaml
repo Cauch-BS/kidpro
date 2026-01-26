@@ -1,4 +1,4 @@
-batch_size: 16
+batch_size: 4
 epochs: 100
 lr: 3e-5
 seed: 42
@@ -8,11 +8,12 @@ use_class_weights: false
 use_balanced_sampling: true
 
 # Optimizer settings
-weight_decay: 0.01
+dropout: 0.25
+weight_decay: 0.05
 head_lr_multiplier: 3.0
 
 # Scheduler settings
-warmup_epochs: 5
+warmup_epochs: 10
 scheduler_type: cosine  # cosine, step, or none
 gradient_clip: 1.0
 
