@@ -83,16 +83,32 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> None:
     head_prefixes = ("fc.", "classifier.", "head.", "last_linear.")
     filtered = {k: v for k, v in state.items() if not k.startswith(head_prefixes)}
 
-    prefixes = ("module.", "model.", "backbone.", "tile_encoder.")
+    prefixes = ("module.", "model.", "backbone.", "tile_encoder.", "base_model.model.")
     stripped: dict[str, torch.Tensor] = {}
     collisions: list[tuple[str, str]] = []
+    dropped_lora = 0
+
+    def _normalize_key(key: str) -> Optional[str]:
+        if "lora_" in key or "modules_to_save" in key:
+            return None
+        out_k = key
+        while True:
+            matched = False
+            for prefix in prefixes:
+                if out_k.startswith(prefix):
+                    out_k = out_k[len(prefix):]
+                    matched = True
+                    break
+            if not matched:
+                break
+        out_k = out_k.replace(".base_layer.", ".")
+        return out_k
 
     for k, v in filtered.items():
-        out_k = k
-        for prefix in prefixes:
-            if out_k.startswith(prefix):
-                out_k = out_k[len(prefix):]
-                break
+        out_k = _normalize_key(k)
+        if out_k is None:
+            dropped_lora += 1
+            continue
         if out_k in stripped and stripped[out_k] is not v:
             collisions.append((out_k, k))
         stripped[out_k] = v
@@ -107,6 +123,7 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> None:
     missing, unexpected = model.load_state_dict(stripped, strict=False)
     print(
         "[FND CKPT]",
+        f"dropped_lora={dropped_lora}",
         f"missing={len(missing)} (showing up to 8): {missing[:8]}",
         f"unexpected={len(unexpected)} (showing up to 8): {unexpected[:8]}",
     )
