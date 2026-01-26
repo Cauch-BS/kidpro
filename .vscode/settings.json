@@ -2,12 +2,14 @@
     "files.exclude": {
       "**/.mypy_cache": true,
       "**/.ruff_cache": true,
-      "**/*.egg-info": true
+      "**/*.egg-info": true,
+      "**/__pycache__": true
     },
     "search.exclude": {
       "**/.mypy_cache": true,
       "**/.ruff_cache": true,
-      "**/*.egg-info": true
+      "**/*.egg-info": true,
+      "**/__pycache__": true
     },
     "mypy-type-checker.args": [
         "--config-file=mypy.ini",
