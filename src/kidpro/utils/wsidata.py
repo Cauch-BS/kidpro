@@ -65,12 +65,13 @@ def open_wsidata(slide_path: str, store_path: Optional[Path] = None) -> WSIData:
         return wsi
 
     store = Path(store_path)
-    if not store.exists():
-        raise FileNotFoundError(f"WSI store not found: {store_path}")
-    if not store.is_dir():
-        raise FileNotFoundError(f"WSI store is not a directory: {store_path}")
 
-    wsi = open_wsi(slide, store=str(store))
+    if store.exists():
+        if not store.is_dir():
+            raise FileNotFoundError(f"WSI store is not a directory: {store_path}")
+        wsi = open_wsi(slide, store=str(store))
+    else:
+        wsi = open_wsi(slide)
     return wsi
 
 
