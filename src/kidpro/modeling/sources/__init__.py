@@ -52,6 +52,18 @@ def _strip_module_prefix(state: Mapping[str, torch.Tensor]) -> dict[str, torch.T
     return dict(state)
 
 
+def _strip_prefix(
+    state: Mapping[str, torch.Tensor],
+    prefix: str,
+) -> dict[str, torch.Tensor]:
+    if not prefix:
+        return dict(state)
+    return {
+        (k[len(prefix):] if k.startswith(prefix) else k): v
+        for k, v in state.items()
+    }
+
+
 def _has_lora_keys(state: Mapping[str, torch.Tensor]) -> bool:
     for k in state.keys():
         if "lora_" in k or "modules_to_save" in k:
@@ -97,6 +109,7 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> nn.Module:
     has_lora = _has_lora_keys(state)
 
     if has_lora and callable(getattr(model, "merge_and_unload", None)):
+        state = _strip_prefix(state, "backbone.tile_encoder.")
         missing, unexpected = model.load_state_dict(state, strict=False)
         merged = model.merge_and_unload()
         if merged is None:
