@@ -361,7 +361,10 @@ def fit_mil(
   # Gradient clipping
   gradient_clip = cfg.train.gradient_clip
 
-  best_val_auc: float = -math.inf
+  # Track best checkpoint using the SAME metric as early stopping.
+  # This avoids stopping on one objective but saving weights optimized for another.
+  best_score: float = -math.inf if es_mode == "max" else math.inf
+  best_score_str: str = "None"
   best_epoch: int = -1  # 1-based when reported
 
   asynchrony: bool = cfg.dataset.data.pin_memory
@@ -483,10 +486,24 @@ def fit_mil(
     auc_str = f"{val_auc:.4f}" if math.isfinite(val_auc) else "None"
 
     # -------------------------
-    # Checkpointing: maximize val_auc
+    # Checkpointing: follow early-stopping metric
     # -------------------------
-    if val_auc > best_val_auc:
-      best_val_auc = val_auc
+    current_score: float
+    current_score_str: str
+    if es_metric == "val_auc":
+      current_score = val_auc if math.isfinite(val_auc) else (-math.inf if es_mode == "max" else math.inf)
+      current_score_str = auc_str
+    elif es_metric == "val_macro_f1":
+      current_score = float(metrics["macro_f1"])
+      current_score_str = f"{current_score:.4f}"
+    else:  # val_loss
+      current_score = val_loss
+      current_score_str = f"{val_loss:.4f}"
+
+    improved = (current_score > best_score) if es_mode == "max" else (current_score < best_score)
+    if improved:
+      best_score = current_score
+      best_score_str = current_score_str
       best_epoch = epoch + 1  # 1-based
       if cfg.core.export.save_best_weights:
         torch.save(model.state_dict(), best_path)
@@ -494,13 +511,12 @@ def fit_mil(
     # -------------------------
     # Logging
     # -------------------------
-    best_auc_str = f"{best_val_auc:.4f}" if math.isfinite(best_val_auc) else "None"
     current_lr = optimizer.param_groups[0]["lr"]
     log.info(
       f"Epoch {epoch+1}/{epochs} | "
       f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | "
       f"val_acc={metrics['acc']:.4f} | val_macro_f1={metrics['macro_f1']:.4f} | val_auc={auc_str} | "
-      f"best_val_auc={best_auc_str} | best_epoch={best_epoch} | "
+      f"best_{es_metric}={best_score_str} | best_epoch={best_epoch} | "
       f"patience={stopper.counter}/{stopper.patience} | lr={current_lr:.2e}"
     )
     # Enhanced diagnostics
@@ -532,7 +548,7 @@ def fit_mil(
       log.info("[Early Stop] Training stopped (%s criterion).", es_metric)
       break
 
-  # Load best weights (by val_auc)
+  # Load best weights (by early-stopping metric)
   if cfg.core.export.save_best_weights and best_path.exists():
     log.info(f"[DONE] Best model saved to {best_path}")
     model.load_state_dict(torch.load(best_path, map_location=rr.device))
@@ -540,7 +556,8 @@ def fit_mil(
   # Persist best summary
   summary = {
     "best_epoch": int(best_epoch),
-    "best_val_auc": None if not math.isfinite(best_val_auc) else float(best_val_auc),
+    "best_metric": str(es_metric),
+    "best_score": None if (best_epoch < 0 or not math.isfinite(best_score)) else float(best_score),
     "best_weights_path": str(best_path) if best_path.exists() else None,
   }
   try:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import hydra
 import torch
@@ -111,10 +111,11 @@ def main(hcfg: DictConfig) -> None:
   )
 
   model = build_model_mil(cfg).to(rr.device)
+  model_mil = cast(Any, model)
   if cfg.model.lora.enabled:
     try:
       ckpt_path = resolve_best_model_from_mlflow(cfg, "tile_model")
-      model.tile_encoder = load_state_dict_generic(cast(nn.Module, model.tile_encoder), ckpt_path)
+      model_mil.tile_encoder = load_state_dict_generic(cast(nn.Module, model_mil.tile_encoder), ckpt_path)
       log.info(f"[LORA INIT] Loaded tile checkpoint: {ckpt_path}")
     except Exception as e:
       raise RuntimeError(
@@ -124,7 +125,7 @@ def main(hcfg: DictConfig) -> None:
   # -------------------------
   # Compute tile_encoder hash for cache invalidation
   # -------------------------
-  tile_encoder_hash = _compute_model_hash(model.tile_encoder)
+  tile_encoder_hash = _compute_model_hash(cast(nn.Module, model_mil.tile_encoder))
   ds_tr.set_tile_encoder_hash(tile_encoder_hash)
   ds_va.set_tile_encoder_hash(tile_encoder_hash)
   log.info("[TILE ENCODER HASH] %s", tile_encoder_hash)
@@ -149,8 +150,8 @@ def main(hcfg: DictConfig) -> None:
   # -------------------------
   # Parameter groups with different learning rates
   # -------------------------
-  slide_encoder_params = list(model.slide_encoder.parameters())
-  classifier_params = list(model.classifier.parameters())
+  slide_encoder_params = list(cast(nn.Module, model_mil.slide_encoder).parameters())
+  classifier_params = list(cast(nn.Module, model_mil.classifier).parameters())
 
   param_groups = [
     {"params": slide_encoder_params, "lr": cfg.train.lr, "name": "slide_encoder"},
@@ -169,7 +170,7 @@ def main(hcfg: DictConfig) -> None:
   # -------------------------
   # Learning rate scheduler with warmup
   # -------------------------
-  scheduler = None
+  scheduler: Any = None
   if cfg.train.scheduler_type != "none":
     # For sanity check, override epochs to 1
     epochs = 1 if cfg.train.sanity_check else cfg.train.epochs
