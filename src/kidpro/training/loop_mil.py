@@ -398,7 +398,9 @@ def fit_mil(
               skipped_train_slides.add(slide_name)
             continue
           raise RuntimeError(f"Error during training: {exc}")
-        loss = criterion(logits, y)
+        # AMP + weighted CE: criterion.weight dtype must match logits dtype.
+        # Keep model in autocast, but compute CE in fp32 for stability.
+        loss = criterion(logits.float(), y)
       else:
         x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)  # (N,C,H,W)
         coords_t = coords.squeeze(0).to(rr.device, non_blocking=asynchrony) if coords is not None else None
@@ -406,10 +408,10 @@ def fit_mil(
         if use_amp and autocast is not None:
           with autocast(device_type="cuda"):
             logits = model(x, coords_t)  # (1,2)
-            loss = criterion(logits, y)
+            loss = criterion(logits.float(), y)
         else:
           logits = model(x, coords_t)
-          loss = criterion(logits, y)
+          loss = criterion(logits.float(), y)
 
       if use_amp and scaler is not None:
         scaler.scale(loss).backward()
@@ -456,17 +458,17 @@ def fit_mil(
                 skipped_val_slides.add(slide_name)
               continue
             raise RuntimeError(f"Error during validation: {exc}")
-          loss = criterion(logits, y)
+          loss = criterion(logits.float(), y)
         else:
           x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)
           coords_t = coords.squeeze(0).to(rr.device, non_blocking=asynchrony) if coords is not None else None
           if use_amp and autocast is not None:
             with autocast(device_type="cuda"):
               logits = model(x, coords_t)
-              loss = criterion(logits, y)
+              loss = criterion(logits.float(), y)
           else:
             logits = model(x, coords_t)
-            loss = criterion(logits, y)
+            loss = criterion(logits.float(), y)
 
         val_losses.append(float(loss.item()))
 
