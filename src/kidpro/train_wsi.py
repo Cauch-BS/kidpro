@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 from typing import cast
@@ -8,6 +9,8 @@ import hydra
 import torch
 from omegaconf import DictConfig
 from torch import nn
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.utils.data import WeightedRandomSampler
 
 from .config.load import CONFIG, CONFIG_EXPORT, resolve_best_model_from_mlflow
 from .data.dataset_mil import MILDataset
@@ -18,6 +21,14 @@ from .modeling.sources import load_state_dict_generic
 from .training.loop_mil import fit_mil
 
 log = logging.getLogger(__name__)
+
+
+def _compute_model_hash(model: nn.Module) -> str:
+  """Compute hash of model parameters for cache invalidation."""
+  hasher = hashlib.md5()
+  for p in model.parameters():
+    hasher.update(p.data.cpu().numpy().tobytes())
+  return hasher.hexdigest()[:16]
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config_wsi")
@@ -36,6 +47,14 @@ def main(hcfg: DictConfig) -> None:
   df_tr = df[df["split"] == "train"].reset_index(drop=True)
   df_va = df[df["split"] == "val"].reset_index(drop=True)
 
+  # -------------------------
+  # Sanity check mode: subset data for quick iteration
+  # -------------------------
+  if cfg.train.sanity_check:
+    df_tr = df_tr.head(cfg.train.sanity_check_samples)
+    df_va = df_va.head(cfg.train.sanity_check_samples)
+    log.info("[SANITY CHECK] Running on %d train / %d val samples for 1 epoch", len(df_tr), len(df_va))
+
   train_tf, val_tf = get_transforms(cfg)
 
   ds_tr = MILDataset(cfg, df_tr, transform=train_tf)
@@ -46,10 +65,21 @@ def main(hcfg: DictConfig) -> None:
       raise ValueError("MIL collate expects batch_size=1.")
     return batch[0]
 
+  # -------------------------
+  # Balanced sampling (optional)
+  # -------------------------
+  sampler = None
+  if cfg.train.use_balanced_sampling:
+    class_counts = df_tr["GT"].value_counts()
+    sample_weights = [1.0 / class_counts[int(gt)] for gt in df_tr["GT"]]
+    sampler = WeightedRandomSampler(sample_weights, num_samples=len(df_tr), replacement=True)
+    log.info("[BALANCED SAMPLING] Class counts: %s", class_counts.to_dict())
+
   dl_tr = torch.utils.data.DataLoader(
     ds_tr,
     batch_size=1,
-    shuffle=True,
+    shuffle=(sampler is None),  # Only shuffle if no sampler
+    sampler=sampler,
     num_workers=cfg.dataset.data.num_workers,
     pin_memory=cfg.dataset.data.pin_memory,
     persistent_workers=(cfg.dataset.data.num_workers > 0),
@@ -78,10 +108,74 @@ def main(hcfg: DictConfig) -> None:
         "Failed to resolve or load tile-trained best_model.pt for LoRA initialization."
       ) from e
 
-  criterion = torch.nn.CrossEntropyLoss()
-  optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.lr)
+  # -------------------------
+  # Compute tile_encoder hash for cache invalidation
+  # -------------------------
+  tile_encoder_hash = _compute_model_hash(model.tile_encoder)
+  ds_tr.set_tile_encoder_hash(tile_encoder_hash)
+  ds_va.set_tile_encoder_hash(tile_encoder_hash)
+  log.info("[TILE ENCODER HASH] %s", tile_encoder_hash)
 
-  best_path = fit_mil(cfg, rr, model, dl_tr, dl_va, criterion, optimizer)
+  # -------------------------
+  # Class-weighted loss (optional)
+  # -------------------------
+  if cfg.train.use_class_weights:
+    class_counts = df_tr["GT"].value_counts().sort_index()
+    total = len(df_tr)
+    num_classes = len(class_counts)
+    weights = torch.tensor(
+      [total / (num_classes * class_counts.get(c, 1)) for c in range(num_classes)],
+      dtype=torch.float32,
+    )
+    log.info("[CLASS WEIGHTS] Class counts: %s, weights: %s", class_counts.to_dict(), weights.tolist())
+    criterion = torch.nn.CrossEntropyLoss(weight=weights.to(rr.device))
+  else:
+    criterion = torch.nn.CrossEntropyLoss()
+
+  # -------------------------
+  # Parameter groups with different learning rates
+  # -------------------------
+  slide_encoder_params = list(model.slide_encoder.parameters())
+  classifier_params = list(model.classifier.parameters())
+
+  param_groups = [
+    {"params": slide_encoder_params, "lr": cfg.train.lr, "name": "slide_encoder"},
+    {"params": classifier_params, "lr": cfg.train.lr * cfg.train.head_lr_multiplier, "name": "classifier"},
+  ]
+  optimizer = torch.optim.AdamW(param_groups, weight_decay=cfg.train.weight_decay)
+
+  log.info(
+    "[PARAM GROUPS] slide_encoder: %d params @ lr=%.2e | classifier: %d params @ lr=%.2e",
+    sum(p.numel() for p in slide_encoder_params),
+    cfg.train.lr,
+    sum(p.numel() for p in classifier_params),
+    cfg.train.lr * cfg.train.head_lr_multiplier,
+  )
+
+  # -------------------------
+  # Learning rate scheduler with warmup
+  # -------------------------
+  scheduler = None
+  if cfg.train.scheduler_type != "none":
+    # For sanity check, override epochs to 1
+    epochs = 1 if cfg.train.sanity_check else cfg.train.epochs
+    total_steps = epochs * len(dl_tr)
+    warmup_steps = cfg.train.warmup_epochs * len(dl_tr)
+
+    if warmup_steps > 0 and warmup_steps < total_steps:
+      warmup_scheduler = LinearLR(optimizer, start_factor=0.1, total_iters=warmup_steps)
+      if cfg.train.scheduler_type == "cosine":
+        main_scheduler = CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps)
+      else:
+        # Step scheduler not implemented, fallback to cosine
+        main_scheduler = CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps)
+      scheduler = SequentialLR(optimizer, [warmup_scheduler, main_scheduler], milestones=[warmup_steps])
+      log.info("[SCHEDULER] Warmup %d steps, then %s decay for %d steps", warmup_steps, cfg.train.scheduler_type, total_steps - warmup_steps)
+    elif cfg.train.scheduler_type == "cosine":
+      scheduler = CosineAnnealingLR(optimizer, T_max=total_steps)
+      log.info("[SCHEDULER] Cosine annealing for %d steps (no warmup)", total_steps)
+
+  best_path = fit_mil(cfg, rr, model, dl_tr, dl_va, criterion, optimizer, scheduler=scheduler)
   log.info(f"[RUN COMPLETE] run_dir={run_dir} best={best_path}")
 
 

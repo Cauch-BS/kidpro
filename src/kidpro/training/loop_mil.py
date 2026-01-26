@@ -10,7 +10,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, roc_auc_score
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -32,6 +39,36 @@ from ..config.schema import AppCfg
 from .early_stop import EarlyStopping
 
 log = logging.getLogger(__name__)
+
+
+def _find_best_threshold(
+  y_true: list[int],
+  y_prob: list[float],
+  num_thresholds: int = 101,
+) -> tuple[float, float]:
+  """
+  Sweep thresholds to find the one that maximizes macro F1.
+
+  Args:
+    y_true: Ground truth labels (0 or 1)
+    y_prob: Predicted probabilities for positive class
+    num_thresholds: Number of threshold values to try
+
+  Returns:
+    Tuple of (best_threshold, best_f1_score)
+  """
+  thresholds = np.linspace(0, 1, num_thresholds)
+  best_thr, best_f1 = 0.5, 0.0
+  y_true_arr = np.array(y_true)
+  y_prob_arr = np.array(y_prob)
+
+  for thr in thresholds:
+    preds = (y_prob_arr >= thr).astype(int)
+    f1 = f1_score(y_true_arr, preds, average="macro", zero_division=0)
+    if f1 > best_f1:
+      best_f1, best_thr = f1, float(thr)
+
+  return best_thr, best_f1
 
 
 def _is_skippable_tile_error(exc: RuntimeError) -> bool:
@@ -69,45 +106,69 @@ def _stream_slide_logits(
   use_amp: bool,
   asynchrony: bool,
 ) -> tuple[torch.Tensor, int]:
+  """
+  Stream tiles through the model to get slide-level logits.
+
+  Caches TILE EMBEDDINGS (output of tile_encoder) so that:
+  - tile_encoder runs only once per slide (expensive, frozen)
+  - slide_encoder + classifier run every epoch (trainable)
+  """
   if not hasattr(tile_stream, "iter_batches"):
     raise ValueError("Expected a tile stream with iter_batches().")
-  cached = None
-  if hasattr(tile_stream, "get_cached_pooled_embedding"):
-    cached = tile_stream.get_cached_pooled_embedding()
-  if cached is not None and hasattr(model, "classify_slide_embedding"):
-    emb_np, tile_count = cached
-    emb_t = torch.from_numpy(emb_np).to(rr.device)
-    if emb_t.ndim == 1:
-      emb_t = emb_t.unsqueeze(0)
-    logits = model.classify_slide_embedding(emb_t)  # type: ignore
-    return logits, tile_count
-  chunk_size = cfg.dataset.data.mil_cache.chunk_size
-  feats_list: list[torch.Tensor] = []
-  coords_list: list[torch.Tensor] = []
-  tile_count = 0
+
   encode_tiles = getattr(model, "encode_tiles", None)
   encode_slide = getattr(model, "encode_slide", None)
   encode_slide_embedding = getattr(model, "encode_slide_embedding", None)
 
-  for tiles, coords in tile_stream.iter_batches(chunk_size):
-    tiles = tiles.to(rr.device, non_blocking=asynchrony)
-    coords = coords.to(rr.device, non_blocking=asynchrony)
-    tile_count += int(tiles.size(0))
+  # Check for cached TILE embeddings (not slide embeddings)
+  cached_tile_emb = None
+  if hasattr(tile_stream, "get_cached_tile_embeddings"):
+    cached_tile_emb = tile_stream.get_cached_tile_embeddings()
 
-    if use_amp and autocast is not None:
-      with autocast(device_type="cuda"):
-        feats = encode_tiles(tiles) if callable(encode_tiles) else model.tile_encoder(tiles) # type: ignore
-    else:
-      feats = encode_tiles(tiles) if callable(encode_tiles) else model.tile_encoder(tiles) # type: ignore
+  if cached_tile_emb is not None:
+    # Load cached tile embeddings - skip tile_encoder
+    feats_np, coords_np = cached_tile_emb
+    feats_all = torch.from_numpy(feats_np).to(rr.device)
+    coords_all = torch.from_numpy(coords_np).to(rr.device)
+    tile_count = feats_all.shape[0]
+  else:
+    # Run tile_encoder and cache results
+    chunk_size = cfg.dataset.data.mil_cache.chunk_size
+    feats_list: list[torch.Tensor] = []
+    coords_list: list[torch.Tensor] = []
+    tile_count = 0
 
-    feats_list.append(feats)
-    coords_list.append(coords)
+    for tiles, coords in tile_stream.iter_batches(chunk_size):
+      tiles = tiles.to(rr.device, non_blocking=asynchrony)
+      coords = coords.to(rr.device, non_blocking=asynchrony)
+      tile_count += int(tiles.size(0))
 
-  if tile_count == 0:
-    raise RuntimeError("Empty tile stream for slide.")
+      if use_amp and autocast is not None:
+        with autocast(device_type="cuda"):
+          feats = encode_tiles(tiles) if callable(encode_tiles) else model.tile_encoder(tiles)  # type: ignore
+      else:
+        feats = encode_tiles(tiles) if callable(encode_tiles) else model.tile_encoder(tiles)  # type: ignore
 
-  feats_all = torch.cat(feats_list, dim=0)
-  coords_all = torch.cat(coords_list, dim=0)
+      feats_list.append(feats)
+      coords_list.append(coords)
+
+    if tile_count == 0:
+      raise RuntimeError("Empty tile stream for slide.")
+
+    feats_all = torch.cat(feats_list, dim=0)
+    coords_all = torch.cat(coords_list, dim=0)
+
+    # Cache tile embeddings for next epoch
+    if hasattr(tile_stream, "set_cached_tile_embeddings"):
+      try:
+        tile_stream.set_cached_tile_embeddings(
+          feats_all.detach().cpu().numpy(),
+          coords_all.detach().cpu().numpy(),
+        )
+      except Exception as exc:
+        log.warning("Failed to cache tile embeddings: %s", exc)
+
+  # ALWAYS run slide_encoder + classifier (these are trainable)
   if use_amp and autocast is not None:
     with autocast(device_type="cuda"):
       if callable(encode_slide_embedding) and hasattr(model, "classify_slide_embedding"):
@@ -121,11 +182,7 @@ def _stream_slide_logits(
       logits = model.classify_slide_embedding(emb)  # type: ignore
     else:
       logits = encode_slide(feats_all, coords_all) if callable(encode_slide) else model(feats_all, coords_all)
-  if hasattr(tile_stream, "set_cached_pooled_embedding") and "emb" in locals():
-    try:
-      tile_stream.set_cached_pooled_embedding(emb.detach().cpu().numpy().squeeze(0), tile_count)
-    except Exception as exc:
-      log.warning("Failed to cache pooled embedding for slide: %s", exc)
+
   return logits, tile_count
 
 
@@ -192,18 +249,55 @@ def evaluate_mil(
   # FIXED: Handle empty validation set
   if not y_true:
     log.warning("[WARN] Empty validation set in evaluate_mil")
-    return {"acc": 0.0, "macro_f1": 0.0, "auc": None, "cm": np.zeros((2, 2), dtype=int)}
+    return {
+      "acc": 0.0,
+      "macro_f1": 0.0,
+      "auc": None,
+      "cm": np.zeros((2, 2), dtype=int),
+      "true_counts": {0: 0, 1: 0},
+      "pred_counts": {0: 0, 1: 0},
+      "pred_pos_rate": 0.0,
+      "true_pos_rate": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "best_thr": 0.5,
+      "f1_at_best_thr": 0.0,
+      "f1_at_0.5": 0.0,
+    }
 
+  y_true_arr = np.array(y_true)
+  y_pred_arr = np.array(y_pred)
+  y_prob_arr = np.array(y_prob)
+
+  # Basic metrics
   acc = accuracy_score(y_true, y_pred)
   macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
 
+  # AUC (only if both classes present)
   auc: Optional[float] = None
   if len(set(y_true)) > 1:
     auc = float(roc_auc_score(y_true, y_prob))
 
+  # Confusion matrix and counts
   cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-  true_counts = {0: int(np.sum(np.asarray(y_true) == 0)), 1: int(np.sum(np.asarray(y_true) == 1))}
-  pred_counts = {0: int(np.sum(np.asarray(y_pred) == 0)), 1: int(np.sum(np.asarray(y_pred) == 1))}
+  true_counts = {0: int(np.sum(y_true_arr == 0)), 1: int(np.sum(y_true_arr == 1))}
+  pred_counts = {0: int(np.sum(y_pred_arr == 0)), 1: int(np.sum(y_pred_arr == 1))}
+
+  # Positive rates
+  pred_pos_rate = float(np.mean(y_pred_arr == 1))
+  true_pos_rate = float(np.mean(y_true_arr == 1))
+
+  # Precision/recall for positive class
+  precision = float(precision_score(y_true, y_pred, zero_division=0))
+  recall = float(recall_score(y_true, y_pred, zero_division=0))
+
+  # Threshold tuning
+  best_thr, f1_at_best_thr = _find_best_threshold(y_true, y_prob)
+
+  # F1 at fixed threshold 0.5
+  preds_at_05 = (y_prob_arr >= 0.5).astype(int)
+  f1_at_05 = float(f1_score(y_true, preds_at_05, average="macro", zero_division=0))
+
   return {
     "acc": float(acc),
     "macro_f1": float(macro_f1),
@@ -211,6 +305,13 @@ def evaluate_mil(
     "cm": cm,
     "true_counts": true_counts,
     "pred_counts": pred_counts,
+    "pred_pos_rate": pred_pos_rate,
+    "true_pos_rate": true_pos_rate,
+    "precision": precision,
+    "recall": recall,
+    "best_thr": best_thr,
+    "f1_at_best_thr": f1_at_best_thr,
+    "f1_at_0.5": f1_at_05,
   }
 
 
@@ -222,9 +323,10 @@ def fit_mil(
   val_loader: DataLoader,
   criterion: nn.Module,
   optimizer: optim.Optimizer,
+  scheduler: Optional[Any] = None,
 ) -> Path:
   """
-  Train MIL model with early stopping on val_loss and checkpointing on val_auc.
+  Train MIL model with early stopping and checkpointing on val_auc.
 
   Args:
     cfg: Application configuration
@@ -234,6 +336,7 @@ def fit_mil(
     val_loader: Validation data loader
     criterion: Loss function
     optimizer: Optimizer
+    scheduler: Optional learning rate scheduler
 
   Returns:
     Path to best model checkpoint
@@ -245,12 +348,18 @@ def fit_mil(
   use_amp = (rr.device == "cuda" and HAS_AMP)
   scaler = GradScaler(device="cuda", enabled=use_amp) if use_amp and GradScaler is not None else None
 
-  # Early stopping on loss (minimize)
-  stopper_loss = EarlyStopping(
+  # Early stopping with configurable metric
+  es_metric = cfg.train.early_stopping.metric
+  es_mode = "max" if es_metric in ("val_auc", "val_macro_f1") else "min"
+  stopper = EarlyStopping(
     patience=cfg.train.early_stopping.patience,
     min_delta=cfg.train.early_stopping.min_delta,
-    mode="min",
+    mode=es_mode,
   )
+  log.info("[EARLY STOPPING] metric=%s, mode=%s, patience=%d", es_metric, es_mode, cfg.train.early_stopping.patience)
+
+  # Gradient clipping
+  gradient_clip = cfg.train.gradient_clip
 
   best_val_auc: float = -math.inf
   best_epoch: int = -1  # 1-based when reported
@@ -260,13 +369,16 @@ def fit_mil(
   skipped_val_slides: set[str] = set()
   skipped_eval_slides: set[str] = set()
 
-  for epoch in range(cfg.train.epochs):
+  # For sanity check mode, limit epochs
+  epochs = 1 if cfg.train.sanity_check else cfg.train.epochs
+
+  for epoch in range(epochs):
     # -------------------------
     # Train
     # -------------------------
     model.train()
     train_losses: list[float] = []
-    pbar = tqdm(train_loader, desc=f"Train {epoch+1}/{cfg.train.epochs}", leave=False)
+    pbar = tqdm(train_loader, desc=f"Train {epoch+1}/{epochs}", leave=False)
 
     for batch in pbar:
       x, y, coords, _slide = _unpack_mil_batch(batch)
@@ -301,14 +413,24 @@ def fit_mil(
 
       if use_amp and scaler is not None:
         scaler.scale(loss).backward()
+        if gradient_clip > 0:
+          scaler.unscale_(optimizer)
+          torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
         scaler.step(optimizer)
         scaler.update()
       else:
         loss.backward()
+        if gradient_clip > 0:
+          torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
         optimizer.step()
 
+      # Step scheduler per batch
+      if scheduler is not None:
+        scheduler.step()
+
       train_losses.append(float(loss.item()))
-      pbar.set_postfix(train_loss=f"{loss.item():.4f}", n_patches=tile_count)
+      current_lr = optimizer.param_groups[0]["lr"]
+      pbar.set_postfix(train_loss=f"{loss.item():.4f}", n_patches=tile_count, lr=f"{current_lr:.2e}")
 
     train_loss = float(np.mean(train_losses)) if train_losses else 0.0
 
@@ -371,24 +493,41 @@ def fit_mil(
     # Logging
     # -------------------------
     best_auc_str = f"{best_val_auc:.4f}" if math.isfinite(best_val_auc) else "None"
+    current_lr = optimizer.param_groups[0]["lr"]
     log.info(
-      f"Epoch {epoch+1}/{cfg.train.epochs} | "
+      f"Epoch {epoch+1}/{epochs} | "
       f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | "
       f"val_acc={metrics['acc']:.4f} | val_macro_f1={metrics['macro_f1']:.4f} | val_auc={auc_str} | "
       f"best_val_auc={best_auc_str} | best_epoch={best_epoch} | "
-      f"patience={stopper_loss.counter}/{stopper_loss.patience}"
+      f"patience={stopper.counter}/{stopper.patience} | lr={current_lr:.2e}"
     )
+    # Enhanced diagnostics
     true_counts = metrics.get("true_counts")
     pred_counts = metrics.get("pred_counts")
     if isinstance(true_counts, dict) and isinstance(pred_counts, dict):
-      log.info("Val class counts: %s | pred counts: %s | cm=%s", true_counts, pred_counts, metrics["cm"])
+      log.info(
+        "Val true_counts=%s | pred_counts=%s | pred_pos_rate=%.3f | true_pos_rate=%.3f",
+        true_counts, pred_counts, metrics["pred_pos_rate"], metrics["true_pos_rate"]
+      )
+      log.info(
+        "Val precision=%.4f | recall=%.4f | f1@0.5=%.4f | best_thr=%.3f | f1@best_thr=%.4f",
+        metrics["precision"], metrics["recall"], metrics["f1_at_0.5"],
+        metrics["best_thr"], metrics["f1_at_best_thr"]
+      )
+      log.info("Val confusion_matrix:\n%s", metrics["cm"])
 
     # -------------------------
-    # Early stopping: minimize val_loss
+    # Early stopping with configurable metric
     # -------------------------
-    stopper_loss.step(val_loss)
-    if stopper_loss.early_stop:
-      log.info("[Early Stop] Training stopped (val_loss criterion).")
+    if es_metric == "val_auc":
+      stopper.step(val_auc if math.isfinite(val_auc) else -math.inf)
+    elif es_metric == "val_macro_f1":
+      stopper.step(metrics["macro_f1"])
+    else:  # val_loss
+      stopper.step(val_loss)
+
+    if stopper.early_stop:
+      log.info("[Early Stop] Training stopped (%s criterion).", es_metric)
       break
 
   # Load best weights (by val_auc)

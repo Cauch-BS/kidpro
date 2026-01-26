@@ -154,6 +154,11 @@ class ModelCfg(BaseModel):
   longnet_dropout: float = 0.25
   input_size: Optional[int] = 256
 
+  # Aggregator selection and input conditioning
+  aggregator_type: Literal["longnet", "mean_pool", "max_pool"] = "longnet"
+  longnet_input_norm: bool = True
+  longnet_input_dropout: float = 0.1
+
   @model_validator(mode="after")
   def _validate(self) -> "ModelCfg":
     if self.in_channels <= 0:
@@ -177,6 +182,8 @@ class ModelCfg(BaseModel):
       raise ValueError("model.longnet_max_wsi_size must be > 0.")
     if self.longnet_dropout < 0 or self.longnet_dropout >= 1:
       raise ValueError("model.longnet_dropout must be in [0, 1).")
+    if self.longnet_input_dropout < 0 or self.longnet_input_dropout >= 1:
+      raise ValueError("model.longnet_input_dropout must be in [0, 1).")
 
     return self
 
@@ -281,6 +288,7 @@ class EarlyStoppingCfg(BaseModel):
   patience: int = 5
   min_delta: float = 1e-5
   mode: Literal["min", "max"] = "min"
+  metric: Literal["val_loss", "val_auc", "val_macro_f1"] = "val_auc"
 
   @model_validator(mode="after")
   def _validate(self) -> "EarlyStoppingCfg":
@@ -298,6 +306,23 @@ class TrainCfg(BaseModel):
   seed: int = 0
   early_stopping: EarlyStoppingCfg = Field(default_factory=EarlyStoppingCfg)
 
+  # Class imbalance handling
+  use_class_weights: bool = True
+  use_balanced_sampling: bool = True
+
+  # Optimizer settings
+  weight_decay: float = 0.01
+  head_lr_multiplier: float = 3.0
+
+  # Scheduler settings
+  warmup_epochs: int = 5
+  scheduler_type: Literal["cosine", "step", "none"] = "cosine"
+  gradient_clip: float = 1.0
+
+  # Sanity check mode
+  sanity_check: bool = False
+  sanity_check_samples: int = 10
+
   @model_validator(mode="after")
   def _validate(self) -> "TrainCfg":
     if self.batch_size <= 0:
@@ -306,6 +331,16 @@ class TrainCfg(BaseModel):
       raise ValueError("train.epochs must be > 0.")
     if self.lr <= 0:
       raise ValueError("train.lr must be > 0.")
+    if self.weight_decay < 0:
+      raise ValueError("train.weight_decay must be >= 0.")
+    if self.head_lr_multiplier <= 0:
+      raise ValueError("train.head_lr_multiplier must be > 0.")
+    if self.warmup_epochs < 0:
+      raise ValueError("train.warmup_epochs must be >= 0.")
+    if self.gradient_clip < 0:
+      raise ValueError("train.gradient_clip must be >= 0.")
+    if self.sanity_check_samples <= 0:
+      raise ValueError("train.sanity_check_samples must be > 0.")
     return self
 
 

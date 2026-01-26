@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable, Iterable, Literal, Optional, cast
+from typing import Any, Callable, Iterable, Iterator, Literal, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -28,6 +30,20 @@ except Exception:  # pragma: no cover - optional dependency
 log = logging.getLogger(__name__)
 
 
+@contextlib.contextmanager
+def _suppress_stderr() -> Iterator[None]:
+  """Suppress stderr output from C libraries like libtiff/OpenSlide."""
+  devnull = os.open(os.devnull, os.O_WRONLY)
+  old_stderr = os.dup(2)
+  try:
+    os.dup2(devnull, 2)
+    yield
+  finally:
+    os.dup2(old_stderr, 2)
+    os.close(devnull)
+    os.close(old_stderr)
+
+
 class TileStream:
   def __init__(self, dataset: "MILDataset", slide_name: str) -> None:
     self._dataset = dataset
@@ -49,11 +65,13 @@ class TileStream:
     if batch_imgs:
       yield self._dataset._stack_tiles(batch_imgs), torch.stack(batch_coords, dim=0)
 
-  def get_cached_pooled_embedding(self) -> Optional[tuple[np.ndarray, int]]:
-    return self._dataset._get_cached_pooled_embedding(self.slide_name)
+  def get_cached_tile_embeddings(self) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    """Get cached tile embeddings and coords for this slide."""
+    return self._dataset._get_cached_tile_embeddings(self.slide_name)
 
-  def set_cached_pooled_embedding(self, embedding: np.ndarray, tile_count: int) -> None:
-    self._dataset._set_cached_pooled_embedding(self.slide_name, embedding, tile_count)
+  def set_cached_tile_embeddings(self, embeddings: np.ndarray, coords: np.ndarray) -> None:
+    """Cache tile embeddings and coords for this slide."""
+    self._dataset._set_cached_tile_embeddings(self.slide_name, embeddings, coords)
 
 
 class _ZarrTileWriter:
@@ -136,9 +154,20 @@ class MILDataset(Dataset):
     if self.cache_cfg.memory_max_slides > 0:
       self._memory_cache = OrderedDict()
 
+    # Track slides that have already warned about unreadable tiles (suppress duplicates)
+    self._warned_slides: set[str] = set()
+
+    # Hash of tile_encoder weights for cache invalidation (set by train_wsi.py)
+    self._tile_encoder_hash: Optional[str] = None
+
     for c in ["SlideName", "GT", "split"]:
       if c not in self.df.columns:
         raise ValueError(f"Missing required column: {c}")
+
+  def set_tile_encoder_hash(self, hash_str: str) -> None:
+    """Set the tile encoder hash for cache invalidation."""
+    self._tile_encoder_hash = hash_str
+    log.info("[MILDataset] tile_encoder_hash set to: %s", hash_str)
 
   def _pooled_emb_enabled(self) -> bool:
     return bool(self.cache_cfg.enabled and self.cache_cfg.cache_pooled_embeddings)
@@ -206,64 +235,84 @@ class MILDataset(Dataset):
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     return zarr.open_group(str(cache_path), mode=mode)
 
-  def _read_pooled_embedding(self, group: Any) -> Optional[tuple[np.ndarray, int]]:
-    if not group.attrs.get("pooled_emb_complete", False):
+  def _read_tile_embeddings(self, group: Any) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    """Read cached tile embeddings and coords from zarr group."""
+    # Check if cache is complete
+    if not group.attrs.get("tile_emb_complete", False):
       return None
-    if self.pooled_emb_tag is not None:
-      if group.attrs.get("pooled_emb_tag") != self.pooled_emb_tag:
+
+    # Check model hash matches (invalidate if tile_encoder changed)
+    if self._tile_encoder_hash is not None:
+      cached_hash = group.attrs.get("tile_emb_model_hash")
+      if cached_hash != self._tile_encoder_hash:
+        log.info("[CACHE MISS] tile_encoder hash mismatch: cached=%s, current=%s", cached_hash, self._tile_encoder_hash)
         return None
-    if self.pooled_emb_key not in group:
+
+    # Check for new format (has both embeddings and coords)
+    if "tile_embeddings" not in group or "tile_coords" not in group:
+      log.info("[CACHE MISS] Old cache format detected, will rebuild")
       return None
-    emb = np.asarray(group[self.pooled_emb_key])
-    tile_count = int(group.attrs.get("pooled_emb_tile_count", 0))
-    return emb, tile_count
 
-  def _write_pooled_embedding(self, group: Any, embedding: np.ndarray, tile_count: int) -> None:
-    emb = np.asarray(embedding, dtype=np.float32).reshape(-1)
-    if self.pooled_emb_key in group:
-      ds = group[self.pooled_emb_key]
-      if tuple(getattr(ds, "shape", ())) != emb.shape:
-        del group[self.pooled_emb_key]
-        ds = group.create_array(
-          self.pooled_emb_key,
-          shape=emb.shape,
-          chunks=emb.shape,
-          dtype=emb.dtype,
-        )
-      ds[...] = emb
-    else:
-      ds = group.create_array(
-        self.pooled_emb_key,
-        shape=emb.shape,
-        chunks=emb.shape,
-        dtype=emb.dtype,
-      )
-      ds[...] = emb
-    group.attrs["pooled_emb_complete"] = True
-    if self.pooled_emb_tag is not None:
-      group.attrs["pooled_emb_tag"] = self.pooled_emb_tag
-    group.attrs["pooled_emb_tile_count"] = int(tile_count)
+    embeddings = np.asarray(group["tile_embeddings"])
+    coords = np.asarray(group["tile_coords"])
+    return embeddings, coords
 
-  def _get_cached_pooled_embedding(self, slide_name: str) -> Optional[tuple[np.ndarray, int]]:
+  def _write_tile_embeddings(self, group: Any, embeddings: np.ndarray, coords: np.ndarray) -> None:
+    """Write tile embeddings and coords to zarr group."""
+    embeddings = np.asarray(embeddings, dtype=np.float32)
+    coords = np.asarray(coords, dtype=np.float32)
+
+    # Write embeddings
+    if "tile_embeddings" in group:
+      del group["tile_embeddings"]
+    group.create_array(
+      "tile_embeddings",
+      data=embeddings,
+      chunks=(min(64, embeddings.shape[0]), embeddings.shape[1]) if embeddings.ndim == 2 else embeddings.shape,
+      dtype=embeddings.dtype,
+    )
+
+    # Write coords
+    if "tile_coords" in group:
+      del group["tile_coords"]
+    group.create_array(
+      "tile_coords",
+      data=coords,
+      chunks=(min(64, coords.shape[0]), coords.shape[1]) if coords.ndim == 2 else coords.shape,
+      dtype=coords.dtype,
+    )
+
+    # Mark as complete and store hash
+    group.attrs["tile_emb_complete"] = True
+    if self._tile_encoder_hash is not None:
+      group.attrs["tile_emb_model_hash"] = self._tile_encoder_hash
+
+    # Remove old format markers if present
+    if "pooled_emb_complete" in group.attrs:
+      del group.attrs["pooled_emb_complete"]
+
+  def _get_cached_tile_embeddings(self, slide_name: str) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    """Get cached tile embeddings and coords for a slide."""
     if not self._pooled_emb_enabled():
       return None
     cache_path = self._zarr_cache_path(slide_name)
     if cache_path is None or not cache_path.exists():
       return None
     group = self._open_zarr_group(cache_path, mode="r")
-    return self._read_pooled_embedding(group)
+    return self._read_tile_embeddings(group)
 
-  def _set_cached_pooled_embedding(self, slide_name: str, embedding: np.ndarray, tile_count: int) -> None:
+  def _set_cached_tile_embeddings(self, slide_name: str, embeddings: np.ndarray, coords: np.ndarray) -> None:
+    """Cache tile embeddings and coords for a slide."""
     if not self._pooled_emb_enabled():
       return
     worker_info = get_worker_info()
     if worker_info is not None:
-      return
+      return  # Don't write from worker processes
     cache_path = self._zarr_cache_path(slide_name)
     if cache_path is None:
       return
     group = self._open_zarr_group(cache_path, mode="a")
-    self._write_pooled_embedding(group, embedding, tile_count)
+    self._write_tile_embeddings(group, embeddings, coords)
 
   def _safe_iter_tiles(self, wsi: Any, slide_name: str) -> Iterable[Any]:
     it = iter(wsi.iter.tile_images(self.tiles_key))
@@ -272,17 +321,22 @@ class MILDataset(Dataset):
 
     while True:
       try:
-        tile = next(it)
+        # Suppress libtiff stderr output (e.g., "TIFFReadRawTile: Read error...")
+        with _suppress_stderr():
+          tile = next(it)
       except StopIteration:
         return
       except Exception as exc:
         if OpenSlideError is None or not isinstance(exc, OpenSlideError):
           raise
         consecutive += 1
-        log.warning(
-          "Skipping unreadable tile for slide %s (%s/%s): %s",
-          slide_name, consecutive, max_errors, exc,
-        )
+        # Only warn once per slide to avoid log spam
+        if slide_name not in self._warned_slides:
+          log.warning(
+            "Skipping unreadable tile for slide %s (%s/%s): %s",
+            slide_name, consecutive, max_errors, exc,
+          )
+          self._warned_slides.add(slide_name)
         if consecutive >= max_errors:
           raise RuntimeError(f"Exceeded max errors ({max_errors}) for slide {slide_name}.") from exc
         continue

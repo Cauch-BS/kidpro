@@ -3,7 +3,25 @@ epochs: 100
 lr: 1e-4
 seed: 42
 
+# Class imbalance handling
+use_class_weights: true
+use_balanced_sampling: true
+
+# Optimizer settings
+weight_decay: 0.01
+head_lr_multiplier: 3.0
+
+# Scheduler settings
+warmup_epochs: 5
+scheduler_type: cosine  # cosine, step, or none
+gradient_clip: 1.0
+
+# Sanity check mode (for quick iteration)
+sanity_check: false
+sanity_check_samples: 10
+
 early_stopping:
-  patience: 10
+  patience: 15
   min_delta: 1e-5
   mode: max
+  metric: val_auc  # val_loss, val_auc, or val_macro_f1
