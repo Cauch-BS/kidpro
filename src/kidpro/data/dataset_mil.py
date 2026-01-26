@@ -69,7 +69,7 @@ class _ZarrTileWriter:
   def _ensure_created(self, arr_shape: tuple[int, ...]) -> None:
     if self.tiles_ds is not None:
       return
-    compressors = {"default": self.compressor} if self.compressor is not None else None
+    compressors = [self.compressor] if self.compressor is not None else None
     self.tiles_ds = self.group.create_array(
       "tiles",
       shape=(0, *arr_shape),
@@ -209,10 +209,9 @@ class MILDataset(Dataset):
   def _read_pooled_embedding(self, group: Any) -> Optional[tuple[np.ndarray, int]]:
     if not group.attrs.get("pooled_emb_complete", False):
       return None
-    if self.pooled_emb_tag is None:
-      return None
-    if group.attrs.get("pooled_emb_tag") != self.pooled_emb_tag:
-      return None
+    if self.pooled_emb_tag is not None:
+      if group.attrs.get("pooled_emb_tag") != self.pooled_emb_tag:
+        return None
     if self.pooled_emb_key not in group:
       return None
     emb = np.asarray(group[self.pooled_emb_key])
