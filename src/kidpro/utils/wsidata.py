@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 import numpy as np
 
@@ -42,8 +44,8 @@ def _quiet_openslide_logs() -> None:
         return
 
     try:
-        openslide_lowlevel.set_error_handler(_null_handler)
-        openslide_lowlevel.set_warning_handler(_null_handler)
+        openslide_lowlevel.set_error_handler(_null_handler) # type: ignore[attr-defined]
+        openslide_lowlevel.set_warning_handler(_null_handler) # type: ignore[attr-defined]
     except Exception:
         pass
     _OPENSLIDE_QUIETED = True
@@ -72,9 +74,31 @@ def open_wsidata(slide_path: str, store_path: Optional[Path] = None) -> WSIData:
     return wsi
 
 
+@contextmanager
+def _silence_stderr() -> Iterator[None]:
+    if os.environ.get("KIDPRO_SUPPRESS_TIFF_ERRORS", "1") == "0":
+        yield
+        return
+    try:
+        old_stderr = os.dup(2)
+    except Exception:
+        yield
+        return
+    try:
+        with open(os.devnull, "w") as devnull:
+            os.dup2(devnull.fileno(), 2)
+            yield
+    finally:
+        try:
+            os.dup2(old_stderr, 2)
+        finally:
+            os.close(old_stderr)
+
+
 def tile_image_to_array(tile: object) -> np.ndarray:
-    image = getattr(tile, "image", tile)
-    arr = np.asarray(image)
+    with _silence_stderr():
+        image = getattr(tile, "image", tile)
+        arr = np.asarray(image)
     if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
         arr = np.moveaxis(arr, 0, -1)
     if arr.ndim == 3 and arr.shape[-1] == 4:

@@ -12,9 +12,31 @@ Pipeline:
 from __future__ import annotations
 
 import argparse
+import os
+import warnings
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
+
+os.environ.setdefault("ALBUMENTATIONS_DISABLE_VERSION_CHECK", "1")
+os.environ.setdefault("DASK_DATAFRAME__QUERY_PLANNING", "True")
+
+warnings.filterwarnings(
+    "ignore",
+    message="The legacy Dask DataFrame implementation is deprecated.*",
+    category=FutureWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message="pkg_resources is deprecated as an API.*",
+    category=UserWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message="Error fetching version info.*",
+    category=UserWarning,
+)
 
 import albumentations as A
 import cv2
@@ -43,6 +65,30 @@ try:
     import timm  # type: ignore
 except Exception:
     timm = None
+
+
+_OPENSLIDE_QUIETED = False
+
+
+def _quiet_openslide_logs() -> None:
+    global _OPENSLIDE_QUIETED
+    if _OPENSLIDE_QUIETED:
+        return
+    try:
+        from openslide import lowlevel as openslide_lowlevel
+    except Exception:
+        _OPENSLIDE_QUIETED = True
+        return
+
+    def _null_handler(*_args: object, **_kwargs: object) -> None:
+        return
+
+    try:
+        openslide_lowlevel.set_error_handler(_null_handler)
+        openslide_lowlevel.set_warning_handler(_null_handler)
+    except Exception:
+        pass
+    _OPENSLIDE_QUIETED = True
 
 
 @dataclass
@@ -117,12 +163,35 @@ def open_wsidata(slide_path: Path) -> "WSIData":
         raise FileNotFoundError(f"WSI file not found: {slide_path}")
     if not slide_path.is_file():
         raise FileNotFoundError(f"WSI path is not a file: {slide_path}")
+    _quiet_openslide_logs()
     return open_wsi(slide_path)
 
 
+@contextmanager
+def _silence_stderr() -> Iterable[None]:
+    if os.environ.get("KIDPRO_SUPPRESS_TIFF_ERRORS", "1") == "0":
+        yield
+        return
+    try:
+        old_stderr = os.dup(2)
+    except Exception:
+        yield
+        return
+    try:
+        with open(os.devnull, "w") as devnull:
+            os.dup2(devnull.fileno(), 2)
+            yield
+    finally:
+        try:
+            os.dup2(old_stderr, 2)
+        finally:
+            os.close(old_stderr)
+
+
 def tile_image_to_array(tile: object) -> np.ndarray:
-    image = getattr(tile, "image", tile)
-    arr = np.asarray(image)
+    with _silence_stderr():
+        image = getattr(tile, "image", tile)
+        arr = np.asarray(image)
     if arr.ndim == 3 and arr.shape[0] in (1, 3, 4):
         arr = np.moveaxis(arr, 0, -1)
     if arr.ndim == 3 and arr.shape[-1] == 4:
