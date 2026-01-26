@@ -61,7 +61,7 @@ class SimpleAggregator(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,
+        x: torch.Tensor | None = None,
         coords: torch.Tensor | None = None,
         all_layer_embed: bool = False,
         **kwargs: Any,  # Accept extra kwargs from PEFT wrapper (e.g., input_ids)
@@ -76,6 +76,12 @@ class SimpleAggregator(nn.Module):
         Returns:
             List containing single pooled embedding of shape (batch, embed_dim)
         """
+        if x is None:
+            x = kwargs.get("x", None)
+        if coords is None:
+            coords = kwargs.get("coords", None)
+        if x is None or coords is None:
+            raise TypeError("SimpleAggregator.forward requires x and coords (either as args or kwargs).")
         # Normalize input
         x = self.input_norm(x)
         x = self.dropout(x)
@@ -217,12 +223,18 @@ class LongNetViT(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,
-        coords: torch.Tensor,
+        x: torch.Tensor | None = None,
+        coords: torch.Tensor | None = None,
         all_layer_embed: bool = False,
         **kwargs: Any,  # Accept extra kwargs from PEFT wrapper (e.g., input_ids)
     ) -> list[torch.Tensor]:
         # Apply input conditioning
+        if x is None:
+            x = kwargs.get("x", None)
+        if coords is None:
+            coords = kwargs.get("coords", None)
+        if x is None or coords is None:
+            raise TypeError("LongNetViT.forward requires x and coords (either as args or kwargs).")
         x = self.input_norm(x)
         x = self.input_dropout(x)
 
@@ -301,12 +313,12 @@ class LongNetMIL(nn.Module):
         """
         if isinstance(self.slide_encoder, SimpleAggregator):
             # SimpleAggregator doesn't need coords
-            slide_out = self.slide_encoder(feats.unsqueeze(0), coords)[-1]
+            slide_out = self.slide_encoder(x = feats.unsqueeze(0))[-1]
         else:
             # LongNetViT requires coords
             if coords is None:
                 raise ValueError("coords are required for LongNetViT slide encoder.")
-            slide_out = self.slide_encoder(feats.unsqueeze(0), coords.unsqueeze(0))[-1]
+            slide_out = self.slide_encoder(x = feats.unsqueeze(0), coords = coords.unsqueeze(0))[-1]
         return cast(torch.Tensor, slide_out)
 
     def classify_slide_embedding(self, embedding: torch.Tensor) -> torch.Tensor:
