@@ -33,6 +33,9 @@ weights:
 # --- LORA knobs ---
 lora:
   enabled: true
+  apply_to:
+  - longnet
+  - backbone
   r: 8
   alpha: 16
   dropout: 0.05
