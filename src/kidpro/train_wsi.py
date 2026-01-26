@@ -71,7 +71,7 @@ def main(hcfg: DictConfig) -> None:
   sampler = None
   if cfg.train.use_balanced_sampling:
     class_counts = df_tr["GT"].value_counts()
-    sample_weights = [1.0 / class_counts[int(gt)] for gt in df_tr["GT"]]
+    sample_weights = [1.0 / class_counts.loc[int(gt)] for gt in df_tr["GT"]]
     sampler = WeightedRandomSampler(sample_weights, num_samples=len(df_tr), replacement=True)
     log.info("[BALANCED SAMPLING] Class counts: %s", class_counts.to_dict())
 
@@ -120,13 +120,14 @@ def main(hcfg: DictConfig) -> None:
   # Class-weighted loss (optional)
   # -------------------------
   if cfg.train.use_class_weights:
-    class_counts = df_tr["GT"].value_counts().sort_index()
+    num_classes = int(getattr(cfg.dataset.task, "num_classes", 2))
+    class_counts = df_tr["GT"].value_counts().reindex(range(num_classes), fill_value=0).sort_index()
     total = len(df_tr)
-    num_classes = len(class_counts)
-    weights = torch.tensor(
-      [total / (num_classes * class_counts.get(c, 1)) for c in range(num_classes)],
-      dtype=torch.float32,
-    )
+    counts = class_counts.to_numpy()
+    # Avoid division by zero if a class is missing in training split
+    counts_safe = counts.copy()
+    counts_safe[counts_safe == 0] = 1
+    weights = torch.tensor(total / (num_classes * counts_safe), dtype=torch.float32)
     log.info("[CLASS WEIGHTS] Class counts: %s, weights: %s", class_counts.to_dict(), weights.tolist())
     criterion = torch.nn.CrossEntropyLoss(weight=weights.to(rr.device))
   else:
