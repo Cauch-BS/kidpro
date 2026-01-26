@@ -36,8 +36,10 @@ def build_model_mil(cfg: AppCfg) -> Module:
   backbone = foundation.backbone
   feat_dim = foundation.feat_dim
   tile_encoder = getattr(backbone, "tile_encoder", backbone)
+  lora_cfg = cfg.model.lora
+  apply_to = set(lora_cfg.apply_to)
 
-  if cfg.model.lora.enabled:
+  if lora_cfg.enabled and "backbone" in apply_to:
     # MIL should not fine-tune the tiling model, even with LoRA enabled.
     # fine-tuning the tiling model should only occur during tile segmentation training.
     tile_encoder = apply_lora(cfg, tile_encoder, freeze_base=True)
@@ -69,6 +71,8 @@ def build_model_mil(cfg: AppCfg) -> Module:
     ckpt_path = _resolve_longnet_weights_path(cfg)
     log.info("Loading LongNet weights from %s", ckpt_path)
     slide_encoder = load_state_dict_generic(slide_encoder, ckpt_path)  # type: ignore[assignment]
+  if lora_cfg.enabled and "longnet" in apply_to:
+    slide_encoder = apply_lora(cfg, slide_encoder, freeze_base=True)
   model = LongNetMIL(tile_encoder=tile_encoder, slide_encoder=slide_encoder, num_classes=num_classes)
 
   return model

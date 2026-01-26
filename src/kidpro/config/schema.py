@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal, Optional, Union
+from typing import Annotated, Literal, Optional, Union, cast
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -88,6 +88,9 @@ class LoraCfg(BaseModel):
   alpha: int = 16
   dropout: float = 0.05
   bias: Literal["none", "all", "lora_only"] = "none"
+  apply_to: list[Literal["backbone", "longnet"]] = Field(
+    default_factory=lambda: cast(list[Literal["backbone", "longnet"]], ["backbone"])
+  )
   target_modules: list[str] = Field(
     default_factory=lambda: [
       "q_proj",
@@ -108,6 +111,8 @@ class LoraCfg(BaseModel):
       raise ValueError("model.lora.alpha must be > 0.")
     if self.dropout < 0 or self.dropout >= 1:
       raise ValueError("model.lora.dropout must be in [0, 1).")
+    if self.enabled and not self.apply_to:
+      raise ValueError("model.lora.apply_to must be non-empty when lora is enabled.")
     if self.enabled and not self.target_modules:
       raise ValueError("model.lora.target_modules must be non-empty when lora is enabled.")
     return self

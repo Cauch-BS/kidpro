@@ -122,7 +122,7 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> nn.Module:
     if has_lora and callable(getattr(model, "merge_and_unload", None)):
         state = _strip_prefix(state, "backbone.tile_encoder.")
         missing, unexpected = model.load_state_dict(state, strict=False)
-        merged = model.merge_and_unload()
+        merged = model.merge_and_unload() # type: ignore[operator]
         if merged is None:
             merged = model
         print(

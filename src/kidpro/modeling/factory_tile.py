@@ -45,7 +45,9 @@ class FoundationSegmentationModel(nn.Module):
     self.backbone = foundation.backbone
     self.feat_dim = foundation.feat_dim
     encoder = getattr(self.backbone, "tile_encoder", self.backbone)
-    if cfg.model.lora.enabled:
+    lora_cfg = cfg.model.lora
+    apply_to = set(lora_cfg.apply_to)
+    if lora_cfg.enabled and "backbone" in apply_to:
       encoder = apply_lora(cfg, encoder, freeze_base=cfg.model.freeze_backbone)
       if getattr(self.backbone, "tile_encoder", None) is not None:
         self.backbone.tile_encoder = encoder
