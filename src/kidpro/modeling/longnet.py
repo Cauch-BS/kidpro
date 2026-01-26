@@ -12,6 +12,55 @@ from .pos_embed import get_2d_sincos_pos_embed
 log = logging.getLogger(__name__)
 
 
+def _infer_stride_1d(vals_int: torch.Tensor) -> torch.Tensor:
+    """
+    Infer the most likely stride from 1D integer coordinates.
+
+    Robust to non-zero origins and MPP rounding effects.
+    """
+    if vals_int.numel() < 2:
+        return torch.tensor(1, device=vals_int.device, dtype=torch.long)
+
+    uniq = torch.unique(vals_int)
+    if uniq.numel() < 2:
+        return torch.tensor(1, device=vals_int.device, dtype=torch.long)
+
+    uniq, _ = torch.sort(uniq)
+    diffs = uniq[1:] - uniq[:-1]
+    diffs = diffs[diffs > 0]
+    if diffs.numel() == 0:
+        return torch.tensor(1, device=vals_int.device, dtype=torch.long)
+
+    diff_vals, counts = torch.unique(diffs, return_counts=True)
+    stride = diff_vals[counts.argmax()].to(torch.long)
+    if stride.item() <= 0:
+        return torch.tensor(1, device=vals_int.device, dtype=torch.long)
+    return stride
+
+
+def _coords_pixel_to_grid(coords_xy: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Convert level-0 pixel coords (x,y) into integer grid coords (col,row).
+
+    Returns:
+        coords_grid: (N,2) int64 tensor as (col,row)
+        stride_x: scalar int64 tensor
+        stride_y: scalar int64 tensor
+    """
+    if coords_xy.ndim != 2 or coords_xy.shape[-1] != 2:
+        raise ValueError(f"Expected coords of shape (N,2), got {tuple(coords_xy.shape)}")
+
+    coords_int = torch.round(coords_xy).to(torch.int64)
+    x = coords_int[:, 0]
+    y = coords_int[:, 1]
+    stride_x = _infer_stride_1d(x)
+    stride_y = _infer_stride_1d(y)
+
+    col = torch.div(x, stride_x, rounding_mode="floor")
+    row = torch.div(y, stride_y, rounding_mode="floor")
+    return torch.stack([col, row], dim=-1), stride_x, stride_y
+
+
 class PatchEmbed(nn.Module):
     """Slide Patch Embedding."""
 
@@ -69,7 +118,7 @@ class SimpleAggregator(nn.Module):
         """
         Args:
             x: Tile embeddings of shape (batch, num_tiles, in_dim) or (num_tiles, in_dim)
-            coords: Tile coordinates (ignored for simple pooling)
+            coords: Tile coordinates (accepted but ignored for simple pooling)
             all_layer_embed: Whether to return all layer embeddings (ignored, returns single embedding)
             **kwargs: Extra keyword arguments (ignored, for PEFT compatibility)
 
@@ -78,10 +127,9 @@ class SimpleAggregator(nn.Module):
         """
         if x is None:
             x = kwargs.get("x", None)
-        if coords is None:
-            coords = kwargs.get("coords", None)
-        if x is None or coords is None:
-            raise TypeError("SimpleAggregator.forward requires x and coords (either as args or kwargs).")
+        _ = coords if coords is not None else kwargs.get("coords", None)
+        if x is None:
+            raise TypeError("SimpleAggregator.forward requires x (either as arg or kwarg).")
         # Normalize input
         x = self.input_norm(x)
         x = self.dropout(x)
@@ -152,9 +200,10 @@ class LongNetViT(nn.Module):
             self.encoder_name += f"_mlp{kwargs.get('mlp_ratio')}"
 
         max_seq_len = (max_wsi_size // tile_size) ** 2
+        end_log2 = torch.floor(torch.log2(torch.tensor(float(max_seq_len)))).to(torch.long)
         segment_length = torch.linspace(
             torch.log2(torch.tensor(1024.0)),
-            torch.log2(torch.tensor(float(max_seq_len))),
+            end_log2.to(torch.float32),
             steps=5,
         )
         segment_list = torch.pow(2.0, segment_length).to(torch.int).tolist()
@@ -180,18 +229,20 @@ class LongNetViT(nn.Module):
 
     def coords_to_pos(self, coords: torch.Tensor, tile_size: int = 256) -> torch.Tensor:
         """
-        Convert pixel coordinates to position indices for position embedding lookup.
+        Convert grid coordinates (col,row) to position indices for pos-embed lookup.
 
         Args:
-            coords: Tile coordinates of shape (..., 2) where coords[..., 0] is x (col) and
-                    coords[..., 1] is y (row) in pixel space.
-            tile_size: Size of each tile in pixels.
+            coords: Tile coordinates of shape (..., 2) as integer grid indices (col,row).
+                These are derived from pixel-space coordinates (x,y) at call sites.
+            tile_size: Unused (kept for backwards compatibility).
 
         Returns:
             Position indices of shape (...) for looking up in pos_embed.
-            Uses row-major ordering: pos = row * ngrids + col + 1 (offset by 1 for CLS token).
+            IMPORTANT: This follows the *reference slide encoder* convention:
+              pos = col * ngrids + row + 1
+            (offset by 1 for CLS token at position 0).
         """
-        coords_ = torch.floor(coords / tile_size)
+        coords_ = coords.to(torch.long)
 
         # Bounds checking assertions
         x_coords = coords_[..., 0]
@@ -207,8 +258,10 @@ class LongNetViT(nn.Module):
                 f"max={y_coords.max().item()}, expected [0, {self.slide_ngrids})"
             )
 
-        # Row-major ordering: pos = y * ngrids + x (where y=row, x=col)
-        pos = y_coords * self.slide_ngrids + x_coords
+        # Reference convention: pos = x * ngrids + y
+        # NOTE: This is not the usual row-major (y * ngrids + x); it's intentional
+        # to match `reference-slide-encode.py`.
+        pos = x_coords * self.slide_ngrids + y_coords
         pos = pos.long() + 1  # Offset by 1 for CLS token at position 0
 
         # Final bounds check
@@ -287,6 +340,8 @@ class LongNetMIL(nn.Module):
         self.tile_encoder = tile_encoder
         self.slide_encoder = slide_encoder
         self.classifier = nn.Linear(slide_encoder.embed_dim, num_classes)
+        self._coord_log_emitted = False
+        self._coord_clamp_warned = False
 
         # Log aggregator type
         if isinstance(slide_encoder, SimpleAggregator):
@@ -318,7 +373,39 @@ class LongNetMIL(nn.Module):
             # LongNetViT requires coords
             if coords is None:
                 raise ValueError("coords are required for LongNetViT slide encoder.")
-            slide_out = self.slide_encoder(x = feats.unsqueeze(0), coords = coords.unsqueeze(0))[-1]
+
+            # Convert pixel-space (x,y) coords to grid-space (col,row) indices.
+            coords_grid, stride_x, stride_y = _coords_pixel_to_grid(coords)
+
+            ngrids = int(getattr(self.slide_encoder, "slide_ngrids", 0))
+            if ngrids <= 0:
+                raise ValueError("slide_encoder.slide_ngrids must be > 0 for LongNetViT.")
+
+            col = coords_grid[:, 0]
+            row = coords_grid[:, 1]
+            col_min, col_max = int(col.min().item()), int(col.max().item())
+            row_min, row_max = int(row.min().item()), int(row.max().item())
+
+            if not self._coord_log_emitted:
+                log.debug("[LongNetMIL] coord stride inferred")
+                self._coord_log_emitted = True
+
+            oob = (col_min < 0) or (row_min < 0) or (col_max >= ngrids) or (row_max >= ngrids)
+            if oob:
+                if not self._coord_clamp_warned:
+                    log.debug("[LongNetMIL] Grid coords out of bounds")
+                    self._coord_clamp_warned = True
+                coords_grid = torch.stack(
+                    [
+                        col.clamp(0, ngrids - 1),
+                        row.clamp(0, ngrids - 1),
+                    ],
+                    dim=-1,
+                )
+
+            # Keep dtype consistent with existing forward signature; slide encoder will cast to long.
+            coords_grid = coords_grid.to(device=coords.device, dtype=coords.dtype)
+            slide_out = self.slide_encoder(x = feats.unsqueeze(0), coords = coords_grid.unsqueeze(0))[-1]
         return cast(torch.Tensor, slide_out)
 
     def classify_slide_embedding(self, embedding: torch.Tensor) -> torch.Tensor:

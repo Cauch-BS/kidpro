@@ -12,8 +12,9 @@ longnet_pretrained: true
 # --- Aggregator selection and input conditioning ---
 # aggregator_type: longnet, mean_pool, or max_pool
 aggregator_type: longnet
-longnet_input_norm: true
-longnet_input_dropout: 0.2
+# Match reference slide encoder defaults (no extra conditioning).
+longnet_input_norm: false
+longnet_input_dropout: 0.0
 longnet_weights:
   source: local
   local_path: /home/khdp-user/workspace/huggingface_cache/prov_gigapath/slide_encoder.pth

@@ -8,6 +8,10 @@ longnet_slide_ngrids: 1000
 longnet_max_wsi_size: 262144
 longnet_dropout: 0.25
 
+# Match reference slide encoder defaults (no extra conditioning).
+longnet_input_norm: false
+longnet_input_dropout: 0.0
+
 num_classes: 2
 in_channels: 3
 pretrained: false
