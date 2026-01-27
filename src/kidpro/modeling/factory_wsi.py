@@ -47,13 +47,10 @@ def build_model_mil(cfg: AppCfg) -> Module:
   num_classes = getattr(cfg.dataset.task, "num_classes", 2)
   aggregator_type = cfg.model.aggregator_type
 
-  from .agg import LongNetMIL, build_slide_encoder
+  from .agg import build_mil_model
 
   log.info("[MIL Factory] Building model with aggregator_type=%s", aggregator_type)
 
-  slide_encoder_result = build_slide_encoder(cfg)
-  slide_encoder = slide_encoder_result.encoder
-
-  model = LongNetMIL(tile_encoder=tile_encoder, slide_encoder=slide_encoder, num_classes=num_classes)
+  model = build_mil_model(cfg, tile_encoder=tile_encoder, num_classes=num_classes)
 
   return model

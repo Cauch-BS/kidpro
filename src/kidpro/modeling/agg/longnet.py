@@ -14,7 +14,7 @@ from .simple import SimpleAggregator
 if TYPE_CHECKING:
     from ...config.schema import AppCfg
 
-from ._types import SlideEncoderBackbone
+from ._types import MILTemplate, SlideEncoderBackbone
 
 log = logging.getLogger(__name__)
 
@@ -71,8 +71,8 @@ def _coords_pixel_to_grid(coords_xy: torch.Tensor) -> tuple[torch.Tensor, torch.
     return torch.stack([col, row], dim=-1), stride_x, stride_y
 
 
-class PatchEmbed(nn.Module):
-    """Slide Patch Embedding."""
+class _PatchEmbed(nn.Module):
+    """Slide Patch Embedding (internal implementation)."""
 
     def __init__(
         self,
@@ -91,7 +91,7 @@ class PatchEmbed(nn.Module):
         return x
 
 
-class LongNetViT(nn.Module):
+class _LongNetViT(nn.Module):
     def __init__(
         self,
         in_chans: int = 1536,
@@ -115,9 +115,9 @@ class LongNetViT(nn.Module):
         # Input conditioning: normalize and dropout before patch embedding
         self.input_norm = nn.LayerNorm(in_chans) if input_norm else nn.Identity()
         self.input_dropout = nn.Dropout(input_dropout) if input_dropout > 0 else nn.Identity()
-        log.info("[LongNetViT] input_norm=%s, input_dropout=%.2f", input_norm, input_dropout)
+        log.info("[_LongNetViT] input_norm=%s, input_dropout=%.2f", input_norm, input_dropout)
 
-        self.patch_embed = PatchEmbed(in_chans, embed_dim, norm_layer=None)
+        self.patch_embed = _PatchEmbed(in_chans, embed_dim, norm_layer=None)
         self.tile_size = tile_size
         self.slide_ngrids = slide_ngrids
         num_patches = slide_ngrids**2
@@ -220,7 +220,7 @@ class LongNetViT(nn.Module):
         if coords is None:
             coords = kwargs.get("coords", None)
         if x is None or coords is None:
-            raise TypeError("LongNetViT.forward requires x and coords (either as args or kwargs).")
+            raise TypeError("_LongNetViT.forward requires x and coords (either as args or kwargs).")
         x = self.input_norm(x)
         x = self.input_dropout(x)
 
@@ -251,15 +251,15 @@ class LongNetViT(nn.Module):
         return outcomes
 
 
-SlideEncoder = Union[LongNetViT, SimpleAggregator]
+SlideEncoder = Union[_LongNetViT, SimpleAggregator]
 
 
-class LongNetMIL(nn.Module):
+class LongNetMIL(MILTemplate):
     """
     MIL model combining tile encoder, slide aggregator, and classifier.
 
     Supports different slide encoders:
-    - LongNetViT: Full LongNet encoder with positional embeddings
+    - _LongNetViT: Full LongNet encoder with positional embeddings
     - SimpleAggregator: Simple mean/max pooling baseline
     """
 
@@ -280,7 +280,7 @@ class LongNetMIL(nn.Module):
         if isinstance(slide_encoder, SimpleAggregator):
             log.info("[LongNetMIL] Using SimpleAggregator (pool_type=%s)", slide_encoder.pool_type)
         else:
-            log.info("[LongNetMIL] Using LongNetViT encoder")
+            log.info("[LongNetMIL] Using _LongNetViT encoder")
 
     def encode_tiles(self, x: torch.Tensor) -> torch.Tensor:
         return cast(torch.Tensor, self.tile_encoder(x))
@@ -293,7 +293,7 @@ class LongNetMIL(nn.Module):
 
         Args:
             feats: Tile features of shape (num_tiles, feat_dim)
-            coords: Tile coordinates of shape (num_tiles, 2). Required for LongNetViT,
+            coords: Tile coordinates of shape (num_tiles, 2). Required for _LongNetViT,
                     optional for SimpleAggregator.
 
         Returns:
@@ -303,16 +303,16 @@ class LongNetMIL(nn.Module):
             # SimpleAggregator doesn't need coords
             slide_out = self.slide_encoder(x = feats.unsqueeze(0))[-1]
         else:
-            # LongNetViT requires coords
+            # _LongNetViT requires coords
             if coords is None:
-                raise ValueError("coords are required for LongNetViT slide encoder.")
+                raise ValueError("coords are required for _LongNetViT slide encoder.")
 
             # Convert pixel-space (x,y) coords to grid-space (col,row) indices.
             coords_grid, stride_x, stride_y = _coords_pixel_to_grid(coords)
 
             ngrids = int(getattr(self.slide_encoder, "slide_ngrids", 0))
             if ngrids <= 0:
-                raise ValueError("slide_encoder.slide_ngrids must be > 0 for LongNetViT.")
+                raise ValueError("slide_encoder.slide_ngrids must be > 0 for _LongNetViT.")
 
             col = coords_grid[:, 0]
             row = coords_grid[:, 1]
@@ -344,13 +344,7 @@ class LongNetMIL(nn.Module):
     def classify_slide_embedding(self, embedding: torch.Tensor) -> torch.Tensor:
         return cast(torch.Tensor, self.classifier(embedding))
 
-    def encode_slide(self, feats: torch.Tensor, coords: torch.Tensor | None = None) -> torch.Tensor:
-        slide_out = self.encode_slide_embedding(feats, coords)
-        return self.classify_slide_embedding(slide_out)
-
-    def forward(self, x: torch.Tensor, coords: torch.Tensor | None = None) -> torch.Tensor:
-        feats = self.encode_tiles(x)
-        return self.encode_slide(feats, coords)
+    # encode_slide and forward are inherited from MILTemplate
 
 
 def _resolve_longnet_weights_path(cfg: "AppCfg") -> Path:
@@ -365,14 +359,14 @@ def _resolve_longnet_weights_path(cfg: "AppCfg") -> Path:
 
 
 def build(cfg: "AppCfg") -> SlideEncoderBackbone:
-    """Build a LongNetViT slide encoder from config."""
+    """Build a _LongNetViT slide encoder from config."""
     from ..lora import apply_lora
     from ..sources import load_state_dict_generic
 
     in_chans = int(getattr(cfg.model, "foundation_dim", 1536))
     dim = cfg.model.longnet_dim
 
-    encoder = LongNetViT(
+    encoder = _LongNetViT(
         in_chans=in_chans,
         embed_dim=dim,
         depth=cfg.model.longnet_depth,
@@ -396,3 +390,21 @@ def build(cfg: "AppCfg") -> SlideEncoderBackbone:
         encoder = apply_lora(cfg, encoder, freeze_base=True)
 
     return SlideEncoderBackbone(encoder=encoder, embed_dim=dim)
+
+
+def build_mil(cfg: "AppCfg", tile_encoder: nn.Module, num_classes: int) -> MILTemplate:
+    """
+    Build a complete LongNetMIL model from config.
+
+    This returns a complete MILTemplate, not just a slide encoder.
+    """
+    slide_encoder_result = build(cfg)
+    slide_encoder = slide_encoder_result.encoder
+
+    model = LongNetMIL(
+        tile_encoder=tile_encoder,
+        slide_encoder=slide_encoder,
+        num_classes=num_classes,
+    )
+
+    return model

@@ -7,25 +7,20 @@ import pkgutil
 import sys
 from typing import Any, Callable, Optional
 
+import torch.nn as nn
+
 from ...config.schema import AppCfg
 
 logger = logging.getLogger(__name__)
 
 
-from ._types import SlideEncoderBackbone
-
-# Re-export for convenience
-from .longnet import LongNetMIL, LongNetViT, PatchEmbed, SlideEncoder
-from .simple import SimpleAggregator
+from ._types import MILTemplate, SlideEncoderBackbone
 
 __all__ = [
-    "LongNetMIL",
-    "LongNetViT",
-    "PatchEmbed",
-    "SimpleAggregator",
-    "SlideEncoder",
+    "MILTemplate",
     "SlideEncoderBackbone",
     "build_slide_encoder",
+    "build_mil_model",
     "available_slide_encoders",
     "discover_slide_encoder_builders",
     "SLIDE_ENCODER_REGISTRY",
@@ -34,7 +29,7 @@ __all__ = [
 
 def discover_slide_encoder_builders(
     addon_paths: Optional[list[str]] = None,
-) -> dict[str, Callable[[AppCfg], SlideEncoderBackbone]]:
+) -> dict[str, Callable[..., Any]]:
     """
     Discovers builders from:
       1) built-in modules in kidpro.modeling.agg.*
@@ -42,13 +37,16 @@ def discover_slide_encoder_builders(
 
     Contract per module:
       - AGGREGATOR_NAME: str
-      - build(cfg: AppCfg) -> SlideEncoderBackbone
+      - build_mil(cfg: AppCfg, tile_encoder: nn.Module, num_classes: int) -> MILTemplate (preferred)
+      - OR build(cfg: AppCfg) -> SlideEncoderBackbone (for aggregators)
+      - OR build(cfg: AppCfg, tile_encoder: nn.Module, num_classes: int) -> MILTemplate (for complete models)
     """
-    builders: dict[str, Callable[[AppCfg], SlideEncoderBackbone]] = {}
+    builders: dict[str, Callable[..., Any]] = {}
 
     def scan_module(mod: Any) -> None:
         agg_name = getattr(mod, "AGGREGATOR_NAME", None)
-        fn = getattr(mod, "build", None)
+        # Prefer build_mil if it exists, otherwise fall back to build
+        fn = getattr(mod, "build_mil", None) or getattr(mod, "build", None)
         if isinstance(agg_name, str) and callable(fn):
             if agg_name in builders:
                 raise RuntimeError(
@@ -118,4 +116,38 @@ def build_slide_encoder(cfg: AppCfg) -> SlideEncoderBackbone:
             "If you added a new module under modeling/agg, ensure it defines "
             "AGGREGATOR_NAME and build(cfg)->SlideEncoderBackbone."
         )
-    return SLIDE_ENCODER_REGISTRY[registry_name](cfg)
+    return SLIDE_ENCODER_REGISTRY[registry_name](cfg) # type: ignore[no-any-return]
+
+
+def build_mil_model(
+    cfg: AppCfg,
+    tile_encoder: nn.Module,
+    num_classes: int,
+) -> MILTemplate:
+    """
+    Build a complete MIL model with configurable slide aggregator.
+
+    Uses cfg.model.aggregator_type to select the aggregator from the registry.
+    All aggregators must provide build_mil() that returns a complete MILTemplate.
+
+    Args:
+        cfg: Application configuration
+        tile_encoder: The tile encoder module (foundation backbone)
+        num_classes: Number of output classes for the classifier
+
+    Returns:
+        Complete MIL model (MILTemplate) ready for training/inference
+    """
+    name = cfg.model.aggregator_type
+    registry_name = _AGGREGATOR_ALIASES.get(name, name)
+
+    if registry_name not in SLIDE_ENCODER_REGISTRY:
+        raise ValueError(
+            f"Unknown slide encoder aggregator_type={name!r}. "
+            f"Available={available_slide_encoders() + list(_AGGREGATOR_ALIASES.keys())}. "
+            "If you added a new module under modeling/agg, ensure it defines "
+            "AGGREGATOR_NAME and build_mil(cfg, tile_encoder, num_classes)->MILTemplate."
+        )
+
+    builder = SLIDE_ENCODER_REGISTRY[registry_name]
+    return builder(cfg, tile_encoder, num_classes) # type: ignore[no-any-return]

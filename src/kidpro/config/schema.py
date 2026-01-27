@@ -155,9 +155,13 @@ class ModelCfg(BaseModel):
   input_size: Optional[int] = 256
 
   # Aggregator selection and input conditioning
-  aggregator_type: Literal["longnet", "mean_pool", "max_pool"] = "longnet"
+  aggregator_type: Literal["longnet", "mean_pool", "max_pool", "gated_attention"] = "longnet"
   longnet_input_norm: bool = True
   longnet_input_dropout: float = 0.1
+
+  # Gated Attention aggregator config
+  gated_attention_hidden_dim: int = 128
+  gated_attention_dropout: float = 0.25
 
   @model_validator(mode="after")
   def _validate(self) -> "ModelCfg":

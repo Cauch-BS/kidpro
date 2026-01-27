@@ -8,7 +8,7 @@ import torch.nn as nn
 if TYPE_CHECKING:
     from ...config.schema import AppCfg
 
-from ._types import SlideEncoderBackbone
+from ._types import MILTemplate, SlideEncoderBackbone
 
 AGGREGATOR_NAME = "simple"
 
@@ -105,3 +105,23 @@ def build(cfg: "AppCfg") -> SlideEncoderBackbone:
         dropout=dropout,
     )
     return SlideEncoderBackbone(encoder=encoder, embed_dim=dim)
+
+
+def build_mil(cfg: "AppCfg", tile_encoder: nn.Module, num_classes: int) -> MILTemplate:
+    """
+    Build a complete LongNetMIL model with SimpleAggregator from config.
+
+    This returns a complete MILTemplate, not just a slide encoder.
+    """
+    from .longnet import LongNetMIL  # Import internally to avoid circular dependency
+
+    slide_encoder_result = build(cfg)
+    slide_encoder = slide_encoder_result.encoder
+
+    model = LongNetMIL(
+        tile_encoder=tile_encoder,
+        slide_encoder=slide_encoder,
+        num_classes=num_classes,
+    )
+
+    return model
