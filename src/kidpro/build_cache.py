@@ -29,7 +29,7 @@ from tqdm import tqdm
 from .config.load import CONFIG, resolve_best_model_from_mlflow
 from .data.dataset_mil import MILDataset, TileStream
 from .data.transform import get_transforms
-from .modeling.patches import build_foundation, freeze_module, load_state_dict_generic
+from .modeling.sources import build_foundation, freeze_module, load_state_dict_generic
 
 log = logging.getLogger(__name__)
 
