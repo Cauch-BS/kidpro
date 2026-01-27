@@ -17,10 +17,8 @@ from ..utils.wsidata import extract_tile_xy, open_wsidata, tile_image_to_array
 
 try:
   import zarr
-  from numcodecs import Blosc
 except Exception:  # pragma: no cover - optional dependency
   zarr = None  # type: ignore
-  Blosc = None  # type: ignore
 
 try:
   from openslide.lowlevel import OpenSlideError
@@ -76,58 +74,6 @@ class TileStream:
     self._dataset._set_cached_tile_embeddings(self.slide_name, embeddings, coords)
 
 
-class _ZarrTileWriter:
-  def __init__(self, group: Any, chunk_size: int, compressor: Any | None) -> None:
-    self.group = group
-    self.chunk_size = chunk_size
-    self.tiles_buf: list[np.ndarray] = []
-    self.coords_buf: list[list[int]] = []
-    self.tiles_ds: Any | None = None
-    self.coords_ds: Any | None = None
-    self.compressor = compressor
-
-  def _ensure_created(self, arr_shape: tuple[int, ...]) -> None:
-    if self.tiles_ds is not None:
-      return
-    compressors = [self.compressor] if self.compressor is not None else None
-    self.tiles_ds = self.group.create_array(
-      "tiles",
-      shape=(0, *arr_shape),
-      chunks=(self.chunk_size, *arr_shape),
-      dtype="uint8",
-      compressors=compressors,
-    )
-    self.coords_ds = self.group.create_array(
-      "coords",
-      shape=(0, 2),
-      chunks=(self.chunk_size, 2),
-      dtype="int32",
-      compressors=compressors,
-    )
-    self.group.attrs["complete"] = False
-
-  def add(self, arr: np.ndarray, coord: list[int]) -> None:
-    self._ensure_created(arr.shape)
-    self.tiles_buf.append(arr)
-    self.coords_buf.append(coord)
-    if len(self.tiles_buf) >= self.chunk_size:
-      self.flush()
-
-  def flush(self) -> None:
-    if not self.tiles_buf:
-      return
-    if self.tiles_ds is None or self.coords_ds is None:
-      raise RuntimeError("Zarr datasets are not initialized.")
-    self.tiles_ds.append(np.stack(self.tiles_buf, axis=0))
-    self.coords_ds.append(np.asarray(self.coords_buf, dtype=np.int32))
-    self.tiles_buf.clear()
-    self.coords_buf.clear()
-
-  def close(self, complete: bool) -> None:
-    self.flush()
-    if complete:
-      self.group.attrs["complete"] = True
-
 class MILDataset(Dataset):
   def __init__(self, cfg: AppCfg, df_slide: pd.DataFrame, transform: Optional[Callable] = None) -> None:
     self.cfg = cfg
@@ -149,7 +95,6 @@ class MILDataset(Dataset):
       self.wsi_ext = f".{self.wsi_ext}"
 
     self._cache_paths: dict[str, Path] = {}
-    self._tile_cache_dir = self._resolve_tile_cache_dir()
     self._memory_cache: Optional[OrderedDict[str, tuple[list[np.ndarray], list[list[int]]]]] = None
     if self.cache_cfg.memory_max_slides > 0:
       self._memory_cache = OrderedDict()
@@ -194,25 +139,15 @@ class MILDataset(Dataset):
       raise RuntimeError("dataset.paths.wsi_dir is required for MIL wsidata loading.")
     return self.wsi_dir / f"{slide_name}{self.wsi_ext}"
 
-  def _resolve_tile_cache_dir(self) -> Optional[Path]:
-    if not self.cache_cfg.enabled:
-      return None
+  def _emb_cache_path(self, slide_name: str) -> Optional[Path]:
+    """Path for tile EMBEDDING cache (separate from tile image cache)."""
     if self.cache_root is None:
-      raise RuntimeError("dataset.paths.cache_dir is required for MIL tile caching.")
-    return self.cache_root / self.cache_cfg.cache_subdir
-
-  def _zarr_cache_path(self, slide_name: str) -> Optional[Path]:
-    if self._tile_cache_dir is None:
       return None
     safe_slide = slide_name.replace("/", "_")
-    return self._tile_cache_dir / f"{safe_slide}.zarr"
-
-  def _zarr_compressor(self) -> Optional[Any]:
-    if self.cache_cfg.compression == "blosc":
-      if Blosc is None:
-        raise RuntimeError("numcodecs is required for blosc compression.")
-      return Blosc(cname="zstd", clevel=3, shuffle=Blosc.BITSHUFFLE)
-    return None
+    # Use completely separate directory (mil_embeds_cache) to avoid tile cache operations
+    # affecting embedding cache
+    emb_dir = self.cache_root / "mil_embeds_cache"
+    return emb_dir / f"{safe_slide}.zarr"
 
   def _get_memory_cache(self, slide_name: str) -> Optional[tuple[list[np.ndarray], list[list[int]]]]:
     if self._memory_cache is None:
@@ -319,11 +254,19 @@ class MILDataset(Dataset):
     """Get cached tile embeddings and coords for a slide."""
     if not self._pooled_emb_enabled():
       return None
-    cache_path = self._zarr_cache_path(slide_name)
+    # Use separate embedding cache path (not shared with tile image cache)
+    cache_path = self._emb_cache_path(slide_name)
     if cache_path is None or not cache_path.exists():
       return None
-    group = self._open_zarr_group(cache_path, mode="r")
-    return self._read_tile_embeddings(group)
+    try:
+      group = self._open_zarr_group(cache_path, mode="r")
+      result = self._read_tile_embeddings(group)
+      if result is None:
+        log.debug("[EMB CACHE INVALID] slide=%s (validation failed)", slide_name)
+      return result
+    except Exception as exc:
+      log.warning("[EMB CACHE READ ERROR] slide=%s: %s", slide_name, exc)
+      return None
 
   def _set_cached_tile_embeddings(self, slide_name: str, embeddings: np.ndarray, coords: np.ndarray) -> None:
     """Cache tile embeddings and coords for a slide."""
@@ -332,16 +275,20 @@ class MILDataset(Dataset):
     worker_info = get_worker_info()
     if worker_info is not None:
       return  # Don't write from worker processes
-    cache_path = self._zarr_cache_path(slide_name)
+    # Use separate embedding cache path (not shared with tile image cache)
+    cache_path = self._emb_cache_path(slide_name)
     if cache_path is None:
       return
-    group = self._open_zarr_group(cache_path, mode="a")
-    # If cache is already valid, don't rewrite (important when a slide can be
-    # sampled multiple times, e.g. with replacement sampling or repeated eval).
-    if self._is_tile_emb_cache_valid(group):
-      log.debug("[EMB CACHE SKIP WRITE] slide=%s (already valid)", slide_name)
-      return
-    self._write_tile_embeddings(group, embeddings, coords)
+    try:
+      group = self._open_zarr_group(cache_path, mode="a")
+      # If cache is already valid, don't rewrite (important when a slide can be
+      # sampled multiple times, e.g. with replacement sampling or repeated eval).
+      if self._is_tile_emb_cache_valid(group):
+        return
+      self._write_tile_embeddings(group, embeddings, coords)
+      log.debug("[EMB CACHE WRITE] slide=%s embeddings=%s", slide_name, embeddings.shape)
+    except Exception as exc:
+      log.warning("[EMB CACHE WRITE ERROR] slide=%s: %s", slide_name, exc)
 
   def _safe_iter_tiles(self, wsi: Any, slide_name: str) -> Iterable[Any]:
     it = iter(wsi.iter.tile_images(self.tiles_key))
@@ -373,25 +320,10 @@ class MILDataset(Dataset):
       consecutive = 0
       yield tile
 
-  def _iter_from_zarr(
-    self, group: Any, chunk_size: int
-  ) -> Iterable[tuple[np.ndarray, list[int]]]:
-    zarr_tiles = cast(Any, group["tiles"])
-    zarr_coords = cast(Any, group["coords"])
-
-    for start in range(0, zarr_tiles.shape[0], chunk_size):
-      end = min(start + chunk_size, zarr_tiles.shape[0])
-      tiles_chunk = zarr_tiles[start:end]
-      coords_chunk = zarr_coords[start:end]
-      for arr, coord in zip(tiles_chunk, coords_chunk):
-        yield arr, [int(coord[0]), int(coord[1])]
-
-
-  def _iter_from_wsi_building_cache(
+  def _iter_from_wsi(
     self,
     slide_name: str,
     wsi: Any,
-    writer: _ZarrTileWriter | None,
   ) -> Iterable[tuple[np.ndarray, list[int]]]:
     found = False
     for tile in self._safe_iter_tiles(wsi, slide_name):
@@ -399,8 +331,6 @@ class MILDataset(Dataset):
       arr = tile_image_to_array(tile)
       x, y = extract_tile_xy(tile)
       coord = [x, y]
-      if writer is not None:
-        writer.add(arr, coord)
       yield arr, coord
 
     if not found:
@@ -414,34 +344,7 @@ class MILDataset(Dataset):
       yield from zip(tiles, coords)
       return
 
-    chunk_size = self.cache_cfg.chunk_size
-    worker_info = get_worker_info()
-    allow_write = worker_info is None  # your policy
-
-    cache_path = self._zarr_cache_path(slide_name)
-    group = None
-
-    # 2) zarr cache read path (complete only)
-    if cache_path is not None and cache_path.exists():
-      g = self._open_zarr_group(cache_path, mode="r")
-      if g.attrs.get("complete", False):
-        mem_tiles: list[np.ndarray] | None = [] if self._memory_cache is not None else None
-        mem_coords: list[list[int]] | None = [] if self._memory_cache is not None else None
-        for arr, coord in self._iter_from_zarr(g, chunk_size):
-          if mem_tiles is not None and mem_coords is not None:
-            mem_tiles.append(arr)
-            mem_coords.append(coord)
-          yield arr, coord
-        if mem_tiles is not None and mem_coords is not None:
-          self._put_memory_cache(slide_name, mem_tiles, mem_coords)
-        return
-      if allow_write:
-        group = self._open_zarr_group(cache_path, mode="w")  # rebuild
-    else:
-      if cache_path is not None and allow_write:
-        group = self._open_zarr_group(cache_path, mode="a")
-
-    # 3) build path: stream from WSI; optionally write cache
+    # 2) load from WSI (using wsidata cache)
     cache_path_wsi = self._resolve_cache_path(slide_name)
     if not cache_path_wsi.exists():
       raise RuntimeError(
@@ -454,26 +357,16 @@ class MILDataset(Dataset):
     slide_path = self._resolve_slide_path(slide_name)
     wsi = open_wsidata(str(slide_path), cache_path_wsi)
 
-    writer = None
-    if group is not None:
-      writer = _ZarrTileWriter(group, chunk_size, self._zarr_compressor())
-
     mem_tiles_live: list[np.ndarray] | None = [] if self._memory_cache is not None else None
     mem_coords_live: list[list[int]] | None = [] if self._memory_cache is not None else None
 
     try:
-      for arr, coord in self._iter_from_wsi_building_cache(slide_name, wsi, writer):
+      for arr, coord in self._iter_from_wsi(slide_name, wsi):
         if mem_tiles_live is not None and mem_coords_live is not None:
           mem_tiles_live.append(arr)
           mem_coords_live.append(coord)
         yield arr, coord
-      if writer is not None:
-        writer.close(complete=True)
     finally:
-      if writer is not None:
-        # if an exception occurs mid-build, ensure we don't mark complete
-        # (writer.close called above only on success)
-        pass
       if hasattr(wsi, "close"):
         wsi.close()
 

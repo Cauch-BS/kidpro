@@ -119,13 +119,16 @@ def _stream_slide_logits(
   cfg: AppCfg,
   use_amp: bool,
   asynchrony: bool,
-) -> tuple[torch.Tensor, int]:
+) -> tuple[torch.Tensor, int, bool]:
   """
   Stream tiles through the model to get slide-level logits.
 
   Caches TILE EMBEDDINGS (output of tile_encoder) so that:
   - tile_encoder runs only once per slide (expensive, frozen)
   - slide_encoder + classifier run every epoch (trainable)
+
+  Returns:
+    Tuple of (logits, tile_count, cache_hit)
   """
   if not hasattr(tile_stream, "iter_batches"):
     raise ValueError("Expected a tile stream with iter_batches().")
@@ -142,14 +145,13 @@ def _stream_slide_logits(
   if cached_tile_emb is not None:
     # Load cached tile embeddings - skip tile_encoder
     feats_np, coords_np = cached_tile_emb
+    cache_hit = True
     feats_all = torch.from_numpy(feats_np).to(rr.device)
     coords_all = torch.from_numpy(coords_np).to(rr.device)
     tile_count = feats_all.shape[0]
-    slide_name = getattr(tile_stream, "slide_name", None)
-    if slide_name is not None:
-      log.debug("[EMB CACHE HIT] slide=%s tiles=%d", slide_name, int(tile_count))
   else:
-    # Run tile_encoder and cache results
+    cache_hit = False
+    # Run tile_encoder and cache results (cache miss)
     chunk_size = cfg.dataset.data.mil_cache.chunk_size
     feats_list: list[torch.Tensor] = []
     coords_list: list[torch.Tensor] = []
@@ -177,16 +179,10 @@ def _stream_slide_logits(
 
     # Cache tile embeddings for next epoch
     if hasattr(tile_stream, "set_cached_tile_embeddings"):
-      try:
-        tile_stream.set_cached_tile_embeddings(
-          feats_all.detach().cpu().numpy(),
-          coords_all.detach().cpu().numpy(),
-        )
-        slide_name = getattr(tile_stream, "slide_name", None)
-        if slide_name is not None:
-          log.debug("[EMB CACHE WRITE] slide=%s tiles=%d", slide_name, int(tile_count))
-      except Exception as exc:
-        log.warning("Failed to cache tile embeddings: %s", exc)
+      tile_stream.set_cached_tile_embeddings(
+        feats_all.detach().cpu().numpy(),
+        coords_all.detach().cpu().numpy(),
+      )
 
   # ALWAYS run slide_encoder + classifier (these are trainable)
   if use_amp and autocast is not None:
@@ -203,7 +199,7 @@ def _stream_slide_logits(
     else:
       logits = encode_slide(feats_all, coords_all) if callable(encode_slide) else model(feats_all, coords_all)
 
-  return logits, tile_count
+  return logits, tile_count, cache_hit
 
 
 @torch.no_grad()
@@ -244,7 +240,7 @@ def evaluate_mil(
 
       if hasattr(x, "iter_batches"):
         try:
-          logits, _tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony=True)
+          logits, _tile_count, _cache_hit = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony=True)
         except RuntimeError as exc:
           if _is_skippable_tile_error(exc):
             slide_name = str(_slide)
@@ -461,6 +457,9 @@ def fit_mil(
     train_y_true: list[int] = []
     train_y_prob: list[float] = []
     train_y_pred: list[int] = []
+    # Cache statistics for this epoch
+    cache_hits = 0
+    cache_misses = 0
     pbar = tqdm(train_loader, desc=f"Train {epoch+1}/{epochs}", leave=False)
 
     for batch in pbar:
@@ -476,7 +475,7 @@ def fit_mil(
 
         if hasattr(x, "iter_batches"):
           try:
-            logits, tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
+            logits, tile_count, cache_hit = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
           except RuntimeError as exc:
             if _is_skippable_tile_error(exc):
               slide_name = str(_slide)
@@ -485,6 +484,11 @@ def fit_mil(
                 skipped_train_slides.add(slide_name)
               continue
             raise RuntimeError(f"Error during training: {exc}")
+          # Track cache statistics
+          if cache_hit:
+            cache_hits += 1
+          else:
+            cache_misses += 1
           # AMP + weighted CE: criterion.weight dtype must match logits dtype.
           # Keep model in autocast, but compute CE in fp32 for stability.
           loss = criterion(logits.float(), y)
@@ -564,7 +568,7 @@ def fit_mil(
 
           if hasattr(x, "iter_batches"):
             try:
-              logits, _tile_count = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
+              logits, _tile_count, _cache_hit = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
             except RuntimeError as exc:
               if _is_skippable_tile_error(exc):
                 slide_name = str(_slide)
@@ -649,6 +653,13 @@ def fit_mil(
       f"val_loss={val_loss:.4f} | "
       f"val_acc={metrics['acc']:.4f} | val_macro_f1={metrics['macro_f1']:.4f} | "
       f"val_auc={auc_str} | val_pr_auc={val_pr_auc_str}"
+    )
+    # Log cache statistics
+    total_cache_ops = cache_hits + cache_misses
+    cache_hit_rate = cache_hits / total_cache_ops if total_cache_ops > 0 else 0.0
+    log.info(
+      f"Epoch {epoch+1}/{epochs} | [CACHE STATS] hits={cache_hits} misses={cache_misses} "
+      f"hit_rate={cache_hit_rate:.1%}"
     )
     log.debug("Skipped slides this epoch: train=%d val=%d", skipped_train_n, skipped_val_n)
     log.info("Train confusion_matrix:\n%s", train_cm)
