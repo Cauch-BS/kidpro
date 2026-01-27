@@ -26,10 +26,10 @@ from omegaconf import DictConfig
 from torch import nn
 from tqdm import tqdm
 
-from .config.load import CONFIG
+from .config.load import CONFIG, resolve_best_model_from_mlflow
 from .data.dataset_mil import MILDataset, TileStream
 from .data.transform import get_transforms
-from .modeling.patches import build_foundation, freeze_module
+from .modeling.patches import build_foundation, freeze_module, load_state_dict_generic
 
 log = logging.getLogger(__name__)
 
@@ -156,11 +156,24 @@ def build_cache(
     # Get validation transforms (deterministic, no augmentation)
     _, val_tf = get_transforms(cfg)
 
-    # Build tile encoder
+    # Build tile encoder (same logic as train_wsi.py)
     log.info("[BUILD CACHE] Building tile encoder...")
     foundation = build_foundation(cfg)
     backbone = foundation.backbone
     tile_encoder = getattr(backbone, "tile_encoder", backbone)
+
+    # Load tile encoder weights from MLflow if LoRA is enabled (matches train_wsi.py)
+    if cfg.model.lora.enabled:
+        try:
+            ckpt_path = resolve_best_model_from_mlflow(cfg, "tile_model")
+            tile_encoder = load_state_dict_generic(tile_encoder, ckpt_path)
+            log.info("[BUILD CACHE] Loaded tile checkpoint from MLflow: %s", ckpt_path)
+        except Exception as e:
+            raise RuntimeError(
+                "Failed to resolve or load tile-trained best_model.pt from MLflow. "
+                "Ensure mlflow.enabled=true and the tile_model is registered."
+            ) from e
+
     freeze_module(tile_encoder)
     tile_encoder = tile_encoder.to(device)
     tile_encoder.eval()
