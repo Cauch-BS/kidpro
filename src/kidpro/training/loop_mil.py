@@ -249,7 +249,7 @@ def evaluate_mil(
           if _is_skippable_tile_error(exc):
             slide_name = str(_slide)
             if slide_name not in skipped_slides:
-              log.warning("Skipping slide %s during eval: %s", slide_name, exc)
+              log.debug("Skipping slide %s during eval: %s", slide_name, exc)
               skipped_slides.add(slide_name)
             continue
           raise RuntimeError(f"Error during evaluation: {exc}")
@@ -481,7 +481,7 @@ def fit_mil(
             if _is_skippable_tile_error(exc):
               slide_name = str(_slide)
               if slide_name not in skipped_train_slides:
-                log.warning("Skipping slide %s during training: %s", slide_name, exc)
+                log.debug("Skipping slide %s during training: %s", slide_name, exc)
                 skipped_train_slides.add(slide_name)
               continue
             raise RuntimeError(f"Error during training: {exc}")
@@ -569,7 +569,7 @@ def fit_mil(
               if _is_skippable_tile_error(exc):
                 slide_name = str(_slide)
                 if slide_name not in skipped_val_slides:
-                  log.warning("Skipping slide %s during val loss: %s", slide_name, exc)
+                  log.debug("Skipping slide %s during val loss: %s", slide_name, exc)
                   skipped_val_slides.add(slide_name)
                 continue
               raise RuntimeError(f"Error during validation: {exc}")
@@ -642,13 +642,15 @@ def fit_mil(
       f"best_{es_metric}={best_score_str} | best_epoch={best_epoch} | "
       f"patience={stopper.counter}/{stopper.patience} | lr={current_lr:.2e}"
     )
+    skipped_train_n = len(skipped_train_slides)
+    skipped_val_n = len(skipped_val_slides)
     log.info(
       f"Epoch {epoch+1}/{epochs} | "
       f"val_loss={val_loss:.4f} | "
       f"val_acc={metrics['acc']:.4f} | val_macro_f1={metrics['macro_f1']:.4f} | "
-      f"val_auc={auc_str} | val_pr_auc={val_pr_auc_str} | "
-      f"skipped_train={len(skipped_train_slides)} | skipped_val={len(skipped_val_slides)}"
+      f"val_auc={auc_str} | val_pr_auc={val_pr_auc_str}"
     )
+    log.debug("Skipped slides this epoch: train=%d val=%d", skipped_train_n, skipped_val_n)
     log.info("Train confusion_matrix:\n%s", train_cm)
     log.info("Val confusion_matrix:\n%s", metrics["cm"])
 

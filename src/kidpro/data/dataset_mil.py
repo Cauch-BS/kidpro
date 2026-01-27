@@ -361,7 +361,7 @@ class MILDataset(Dataset):
         consecutive += 1
         # Only warn once per slide to avoid log spam
         if slide_name not in self._warned_slides:
-          log.warning(
+          log.debug(
             "Skipping unreadable tile for slide %s (%s/%s): %s",
             slide_name, consecutive, max_errors, exc,
           )
