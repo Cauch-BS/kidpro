@@ -13,7 +13,8 @@ from .simple import SimpleAggregator
 
 if TYPE_CHECKING:
     from ...config.schema import AppCfg
-    from . import SlideEncoderBackbone
+
+from ._types import SlideEncoderBackbone
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ def _infer_stride_1d(vals_int: torch.Tensor) -> torch.Tensor:
     stride = diff_vals[counts.argmax()].to(torch.long)
     if stride.item() <= 0:
         return torch.tensor(1, device=vals_int.device, dtype=torch.long)
-    return stride
+    return stride # type: ignore[no-any-return]
 
 
 def _coords_pixel_to_grid(coords_xy: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -367,7 +368,6 @@ def build(cfg: "AppCfg") -> SlideEncoderBackbone:
     """Build a LongNetViT slide encoder from config."""
     from ..lora import apply_lora
     from ..sources import load_state_dict_generic
-    from . import SlideEncoderBackbone
 
     in_chans = int(getattr(cfg.model, "foundation_dim", 1536))
     dim = cfg.model.longnet_dim

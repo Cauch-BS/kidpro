@@ -7,8 +7,8 @@ import torch.nn as nn
 
 if TYPE_CHECKING:
     from ...config.schema import AppCfg
-    from . import SlideEncoderBackbone
 
+from ._types import SlideEncoderBackbone
 
 AGGREGATOR_NAME = "simple"
 
@@ -70,29 +70,28 @@ class SimpleAggregator(nn.Module):
         x = self.proj(x)  # (..., embed_dim)
 
         # Pool over tiles
-        if x.ndim == 2:
+        if x.ndim == 2: # type: ignore[union-attr]
             # (num_tiles, embed_dim) -> (1, embed_dim)
             if self.pool_type == "mean":
-                pooled = x.mean(dim=0, keepdim=True)
+                pooled = x.mean(dim=0, keepdim=True) # type: ignore[union-attr]
             elif self.pool_type == "max":
-                pooled = x.max(dim=0, keepdim=True)[0]
+                pooled = x.max(dim=0, keepdim=True)[0] # type: ignore[union-attr]
             else:
                 raise ValueError(f"Unknown pool_type: {self.pool_type}")
         else:
             # (batch, num_tiles, embed_dim) -> (batch, embed_dim)
             if self.pool_type == "mean":
-                pooled = x.mean(dim=1)
+                pooled = x.mean(dim=1) # type: ignore[union-attr]
             elif self.pool_type == "max":
-                pooled = x.max(dim=1)[0]
+                pooled = x.max(dim=1)[0] # type: ignore[union-attr]
             else:
                 raise ValueError(f"Unknown pool_type: {self.pool_type}")
 
         return [self.norm(pooled)]
 
 
-def build(cfg: "AppCfg") -> "SlideEncoderBackbone":
+def build(cfg: "AppCfg") -> SlideEncoderBackbone:
     """Build a SimpleAggregator from config."""
-    from . import SlideEncoderBackbone
 
     in_chans = int(getattr(cfg.model, "foundation_dim", 1536))
     dim = cfg.model.longnet_dim

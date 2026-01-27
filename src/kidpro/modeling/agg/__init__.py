@@ -5,15 +5,14 @@ import logging
 import os
 import pkgutil
 import sys
-from dataclasses import dataclass
 from typing import Any, Callable, Optional
-
-import torch.nn as nn
 
 from ...config.schema import AppCfg
 
 logger = logging.getLogger(__name__)
 
+
+from ._types import SlideEncoderBackbone
 
 # Re-export for convenience
 from .longnet import LongNetMIL, LongNetViT, PatchEmbed, SlideEncoder
@@ -31,15 +30,6 @@ __all__ = [
     "discover_slide_encoder_builders",
     "SLIDE_ENCODER_REGISTRY",
 ]
-
-
-# -------------------------
-# Public return type
-# -------------------------
-@dataclass(frozen=True)
-class SlideEncoderBackbone:
-    encoder: nn.Module
-    embed_dim: int
 
 
 def discover_slide_encoder_builders(
