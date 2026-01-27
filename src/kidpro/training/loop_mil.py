@@ -427,7 +427,7 @@ def fit_mil(
 
   # Early stopping with configurable metric
   es_metric = cfg.train.early_stopping.metric
-  es_mode = "max" if es_metric in ("val_auc", "val_macro_f1") else "min"
+  es_mode = "max" if es_metric in ("val_auc", "val_pr_auc", "val_macro_f1") else "min"
   stopper = EarlyStopping(
     patience=cfg.train.early_stopping.patience,
     min_delta=cfg.train.early_stopping.min_delta,
@@ -458,6 +458,9 @@ def fit_mil(
     # -------------------------
     model.train()
     train_losses: list[float] = []
+    train_y_true: list[int] = []
+    train_y_prob: list[float] = []
+    train_y_pred: list[int] = []
     pbar = tqdm(train_loader, desc=f"Train {epoch+1}/{epochs}", leave=False)
 
     for batch in pbar:
@@ -497,6 +500,14 @@ def fit_mil(
             logits = model(x, coords_t)
             loss = criterion(logits.float(), y)
 
+        # Training metrics (slide-level) - detach so metrics don't backprop.
+        with torch.no_grad():
+          prob_pos = torch.softmax(logits.detach().float(), dim=1)[:, 1]
+          pred = torch.argmax(logits.detach(), dim=1)
+          train_y_true.append(int(y.detach().view(-1)[0].item()))
+          train_y_prob.append(float(prob_pos.view(-1)[0].item()))
+          train_y_pred.append(int(pred.view(-1)[0].item()))
+
         tile_count_total += int(tile_count)
         n_effective += 1
         loss_sum = loss if loss_sum is None else (loss_sum + loss)
@@ -528,6 +539,16 @@ def fit_mil(
       pbar.set_postfix(train_loss=f"{loss_mean.item():.4f}", n_patches=tile_count_total, lr=f"{current_lr:.2e}")
 
     train_loss = float(np.mean(train_losses)) if train_losses else 0.0
+
+    # Train metrics (epoch-level)
+    train_acc = accuracy_score(train_y_true, train_y_pred) if train_y_true else 0.0
+    train_macro_f1 = f1_score(train_y_true, train_y_pred, average="macro", zero_division=0) if train_y_true else 0.0
+    train_auc: Optional[float] = None
+    train_pr_auc: Optional[float] = None
+    if len(set(train_y_true)) > 1:
+      train_auc = float(roc_auc_score(train_y_true, train_y_prob))
+      train_pr_auc = float(average_precision_score(train_y_true, train_y_prob))
+    train_cm = confusion_matrix(train_y_true, train_y_pred, labels=[0, 1]) if train_y_true else np.zeros((2, 2), dtype=int)
 
     # -------------------------
     # Val loss
@@ -584,6 +605,11 @@ def fit_mil(
     if es_metric == "val_auc":
       current_score = val_auc if math.isfinite(val_auc) else (-math.inf if es_mode == "max" else math.inf)
       current_score_str = auc_str
+    elif es_metric == "val_pr_auc":
+      pr_auc_val = metrics.get("pr_auc", None)
+      pr_auc_num = float(pr_auc_val) if isinstance(pr_auc_val, (float, int)) else -math.inf
+      current_score = pr_auc_num
+      current_score_str = f"{pr_auc_num:.4f}" if math.isfinite(pr_auc_num) else "None"
     elif es_metric == "val_macro_f1":
       current_score = float(metrics["macro_f1"])
       current_score_str = f"{current_score:.4f}"
@@ -603,47 +629,38 @@ def fit_mil(
     # Logging
     # -------------------------
     current_lr = optimizer.param_groups[0]["lr"]
+    train_auc_str = f"{train_auc:.4f}" if isinstance(train_auc, (float, int)) else "None"
+    train_pr_auc_str = f"{train_pr_auc:.4f}" if isinstance(train_pr_auc, (float, int)) else "None"
+    val_pr_auc = metrics.get("pr_auc", None)
+    val_pr_auc_str = f"{float(val_pr_auc):.4f}" if isinstance(val_pr_auc, (float, int)) else "None"
+
     log.info(
       f"Epoch {epoch+1}/{epochs} | "
-      f"train_loss={train_loss:.4f} | val_loss={val_loss:.4f} | "
-      f"val_acc={metrics['acc']:.4f} | val_macro_f1={metrics['macro_f1']:.4f} | "
-      f"val_auc={auc_str} | val_pr_auc={metrics.get('pr_auc', None)} | "
+      f"train_loss={train_loss:.4f} | "
+      f"train_acc={float(train_acc):.4f} | train_macro_f1={float(train_macro_f1):.4f} | "
+      f"train_auc={train_auc_str} | train_pr_auc={train_pr_auc_str} | "
       f"best_{es_metric}={best_score_str} | best_epoch={best_epoch} | "
       f"patience={stopper.counter}/{stopper.patience} | lr={current_lr:.2e}"
     )
-    # Enhanced diagnostics
-    true_counts = metrics.get("true_counts")
-    pred_counts = metrics.get("pred_counts")
-    if isinstance(true_counts, dict) and isinstance(pred_counts, dict):
-      log.info(
-        "Val true_counts=%s | pred_counts=%s | pred_pos_rate=%.3f | true_pos_rate=%.3f",
-        true_counts, pred_counts, metrics["pred_pos_rate"], metrics["true_pos_rate"]
-      )
-      log.info(
-        "Val precision=%.4f | recall=%.4f | f1@0.5=%.4f | best_thr=%.3f | f1@best_thr=%.4f",
-        metrics["precision"], metrics["recall"], metrics["f1_at_0.5"],
-        metrics["best_thr"], metrics["f1_at_best_thr"]
-      )
-      pr_auc = metrics.get("pr_auc", None)
-      if pr_auc is not None:
-        log.info("Val PR-AUC=%.4f", float(pr_auc))
-      log.info(
-        "Val prob[min/mean/max]=%.4f/%.4f/%.4f | prob<0.01=%.3f | prob>0.99=%.3f",
-        metrics["prob_min"], metrics["prob_mean"], metrics["prob_max"],
-        metrics["prob_lt_001_rate"], metrics["prob_gt_099_rate"],
-      )
-      log.info(
-        "Val pos_logit[min/mean/max]=%s/%s/%s | margin(min/mean/max)=%s/%s/%s",
-        metrics.get("pos_logit_min"), metrics.get("pos_logit_mean"), metrics.get("pos_logit_max"),
-        metrics.get("margin_min"), metrics.get("margin_mean"), metrics.get("margin_max"),
-      )
-      log.info("Val confusion_matrix:\n%s", metrics["cm"])
+    log.info(
+      f"Epoch {epoch+1}/{epochs} | "
+      f"val_loss={val_loss:.4f} | "
+      f"val_acc={metrics['acc']:.4f} | val_macro_f1={metrics['macro_f1']:.4f} | "
+      f"val_auc={auc_str} | val_pr_auc={val_pr_auc_str} | "
+      f"skipped_train={len(skipped_train_slides)} | skipped_val={len(skipped_val_slides)}"
+    )
+    log.info("Train confusion_matrix:\n%s", train_cm)
+    log.info("Val confusion_matrix:\n%s", metrics["cm"])
 
     # -------------------------
     # Early stopping with configurable metric
     # -------------------------
     if es_metric == "val_auc":
       stopper.step(val_auc if math.isfinite(val_auc) else -math.inf)
+    elif es_metric == "val_pr_auc":
+      pr_auc_val = metrics.get("pr_auc", None)
+      pr_auc_num = float(pr_auc_val) if isinstance(pr_auc_val, (float, int)) else -math.inf
+      stopper.step(pr_auc_num)
     elif es_metric == "val_macro_f1":
       stopper.step(metrics["macro_f1"])
     else:  # val_loss

@@ -25,4 +25,4 @@ early_stopping:
   patience: 8
   min_delta: 1e-4
   mode: max
-  metric: val_auc  # val_loss, val_auc, or val_macro_f1
+  metric: val_pr_auc  # val_loss, val_auc, val_pr_auc, or val_macro_f1
