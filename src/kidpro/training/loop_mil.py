@@ -38,6 +38,7 @@ except ImportError:
 from ..config.load import RuntimeResolved
 from ..config.schema import AppCfg
 from .early_stop import EarlyStopping
+from .rankmix import RankMixSampler, TileScorer, compute_rankmix_loss, rankmix
 
 log = logging.getLogger(__name__)
 
@@ -108,32 +109,29 @@ def _as_mil_samples(batch: Any) -> list[tuple[Any, ...]]:
 
 
 
-def _stream_slide_logits(
+def _get_tile_embeddings(
   model: nn.Module,
   tile_stream: Any,
   rr: RuntimeResolved,
   cfg: AppCfg,
   use_amp: bool,
   asynchrony: bool,
-) -> tuple[torch.Tensor, int, bool]:
+) -> tuple[torch.Tensor, torch.Tensor, int, bool]:
   """
-  Stream tiles through the model to get slide-level logits.
+  Extract tile embeddings from a slide without running the aggregator.
 
-  Caches TILE EMBEDDINGS (output of tile_encoder) so that:
-  - tile_encoder runs only once per slide (expensive, frozen)
-  - slide_encoder + classifier run every epoch (trainable)
+  This is useful for RankMix where we need embeddings from multiple slides
+  before mixing them and passing through the aggregator.
 
   Returns:
-    Tuple of (logits, tile_count, cache_hit)
+    Tuple of (tile_embeddings, tile_coords, tile_count, cache_hit)
   """
   if not hasattr(tile_stream, "iter_batches"):
     raise ValueError("Expected a tile stream with iter_batches().")
 
   encode_tiles = getattr(model, "encode_tiles", None)
-  encode_slide = getattr(model, "encode_slide", None)
-  encode_slide_embedding = getattr(model, "encode_slide_embedding", None)
 
-  # Check for cached TILE embeddings (not slide embeddings)
+  # Check for cached TILE embeddings
   cached_tile_emb = None
   if hasattr(tile_stream, "get_cached_tile_embeddings"):
     cached_tile_emb = tile_stream.get_cached_tile_embeddings()
@@ -180,7 +178,30 @@ def _stream_slide_logits(
         coords_all.detach().cpu().numpy(),
       )
 
-  # ALWAYS run slide_encoder + classifier (these are trainable)
+  return feats_all, coords_all, tile_count, cache_hit
+
+
+def _embeddings_to_logits(
+  model: nn.Module,
+  feats_all: torch.Tensor,
+  coords_all: torch.Tensor,
+  use_amp: bool,
+) -> torch.Tensor:
+  """
+  Run aggregator and classifier on tile embeddings to get logits.
+
+  Args:
+    model: MIL model with encode_slide or encode_slide_embedding + classify_slide_embedding
+    feats_all: Tile embeddings of shape (N, D)
+    coords_all: Tile coordinates of shape (N, 2)
+    use_amp: Whether to use automatic mixed precision
+
+  Returns:
+    Logits tensor of shape (1, num_classes)
+  """
+  encode_slide = getattr(model, "encode_slide", None)
+  encode_slide_embedding = getattr(model, "encode_slide_embedding", None)
+
   if use_amp and autocast is not None:
     with autocast(device_type="cuda"):
       if callable(encode_slide_embedding) and hasattr(model, "classify_slide_embedding"):
@@ -195,6 +216,31 @@ def _stream_slide_logits(
     else:
       logits = encode_slide(feats_all, coords_all) if callable(encode_slide) else model(feats_all, coords_all)
 
+  return logits # type: ignore[no-any-return]
+
+
+def _stream_slide_logits(
+  model: nn.Module,
+  tile_stream: Any,
+  rr: RuntimeResolved,
+  cfg: AppCfg,
+  use_amp: bool,
+  asynchrony: bool,
+) -> tuple[torch.Tensor, int, bool]:
+  """
+  Stream tiles through the model to get slide-level logits.
+
+  Caches TILE EMBEDDINGS (output of tile_encoder) so that:
+  - tile_encoder runs only once per slide (expensive, frozen)
+  - slide_encoder + classifier run every epoch (trainable)
+
+  Returns:
+    Tuple of (logits, tile_count, cache_hit)
+  """
+  feats_all, coords_all, tile_count, cache_hit = _get_tile_embeddings(
+    model, tile_stream, rr, cfg, use_amp, asynchrony
+  )
+  logits = _embeddings_to_logits(model, feats_all, coords_all, use_amp)
   return logits, tile_count, cache_hit
 
 
@@ -383,9 +429,17 @@ def fit_mil(
   criterion: nn.Module,
   optimizer: optim.Optimizer,
   scheduler: Optional[Any] = None,
+  # RankMix components (optional, for two-stage training)
+  rankmix_scorer: Optional[TileScorer] = None,
+  rankmix_sampler: Optional[RankMixSampler] = None,
+  train_dataset: Optional[Any] = None,
 ) -> Path:
   """
-  Train MIL model with early stopping and checkpointing on val_auc.
+  Train MIL model with early stopping and checkpointing.
+
+  Supports optional RankMix data augmentation for class imbalance:
+  - Stage 1 (epochs 1 to stage1_epochs): Standard MIL training
+  - Stage 2 (epochs stage1_epochs+1 onwards): RankMix augmentation
 
   Args:
     cfg: Application configuration
@@ -396,6 +450,9 @@ def fit_mil(
     criterion: Loss function
     optimizer: Optimizer
     scheduler: Optional learning rate scheduler
+    rankmix_scorer: Optional TileScorer for RankMix (required if rankmix enabled)
+    rankmix_sampler: Optional RankMixSampler for partner slide selection
+    train_dataset: Optional training dataset for RankMix partner access
 
   Returns:
     Path to best model checkpoint
@@ -434,11 +491,27 @@ def fit_mil(
   # For sanity check mode, limit epochs
   epochs = 1 if cfg.train.sanity_check else cfg.train.epochs
 
+  # RankMix configuration
+  rankmix_cfg = cfg.train.rankmix
+  rankmix_enabled = rankmix_cfg.enabled and rankmix_scorer is not None and rankmix_sampler is not None
+
+  if rankmix_enabled:
+    log.info(
+      "[RANKMIX] Stage 2 Training: alpha=%.2f, minority_ratio=%.2f",
+      rankmix_cfg.alpha,
+      rankmix_cfg.minority_sampling_ratio,
+    )
+  elif rankmix_cfg.enabled:
+    log.warning("[RANKMIX] Config enabled but missing scorer/sampler - running standard training")
+
   for epoch in range(epochs):
     # -------------------------
     # Train
     # -------------------------
     model.train()
+    if rankmix_scorer is not None:
+      rankmix_scorer.train()
+
     train_losses: list[float] = []
     train_y_true: list[int] = []
     train_y_prob: list[float] = []
@@ -446,6 +519,9 @@ def fit_mil(
     # Cache statistics for this epoch
     cache_hits = 0
     cache_misses = 0
+    # RankMix statistics
+    rankmix_count = 0
+    rankmix_avg_lambda = 0.0
     pbar = tqdm(train_loader, desc=f"Train {epoch+1}/{epochs}", leave=False)
 
     for batch in pbar:
@@ -457,9 +533,13 @@ def fit_mil(
       for sample in _as_mil_samples(batch):
         x, y, _coords, _slide = _unpack_mil_batch(sample)
         y = y.to(rr.device, non_blocking=asynchrony)  # (1,)
+        y_val = int(y.item())
 
         try:
-          logits, tile_count, cache_hit = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
+          # Get tile embeddings for current slide
+          feats_a, coords_a, tile_count, cache_hit = _get_tile_embeddings(
+            model, x, rr, cfg, use_amp, asynchrony
+          )
         except RuntimeError as exc:
           if _is_skippable_tile_error(exc):
             slide_name = str(_slide)
@@ -475,15 +555,73 @@ def fit_mil(
         else:
           cache_misses += 1
 
-        # AMP + weighted CE: criterion.weight dtype must match logits dtype.
-        # Keep model in autocast, but compute CE in fp32 for stability.
-        loss = criterion(logits.float(), y)
+        # -------------------------
+        # RankMix: Mix with partner slide (Stage 2 training)
+        # -------------------------
+        if rankmix_enabled and rankmix_sampler is not None and rankmix_scorer is not None and train_dataset is not None:
+          try:
+            # Sample a partner slide (biased toward minority class)
+            partner_idx = rankmix_sampler.sample_partner_idx()
+            partner_stream, partner_y, _partner_slide = train_dataset[partner_idx]
+            partner_y_val = int(partner_y.item())
+
+            # Get embeddings for partner slide
+            feats_b, coords_b, _, partner_cache_hit = _get_tile_embeddings(
+              model, partner_stream, rr, cfg, use_amp, asynchrony
+            )
+            if partner_cache_hit:
+              cache_hits += 1
+            else:
+              cache_misses += 1
+
+            # Score tiles for both slides
+            with torch.no_grad():
+              scores_a = rankmix_scorer(feats_a.detach())
+              scores_b = rankmix_scorer(feats_b.detach())
+
+            # Mix ranked embeddings
+            feats_mixed, y_mixed, lam = rankmix(
+              feats_a, feats_b, scores_a, scores_b,
+              y_val, partner_y_val, alpha=rankmix_cfg.alpha
+            )
+
+            # Use mixed coordinates (average or from slide A)
+            # For simplicity, we use coords from slide A since RankMix preserves order
+            k = feats_mixed.shape[0]
+            coords_mixed = coords_a[:k] if k <= coords_a.shape[0] else coords_a
+
+            # Get logits from mixed embeddings
+            logits = _embeddings_to_logits(model, feats_mixed, coords_mixed, use_amp)
+
+            # Compute loss with soft label
+            loss = compute_rankmix_loss(logits, y_mixed)
+
+            # Track RankMix statistics
+            rankmix_count += 1
+            rankmix_avg_lambda = (rankmix_avg_lambda * (rankmix_count - 1) + lam) / rankmix_count
+
+            # For metrics, use the mixed label rounded to nearest class
+            y_for_metrics = int(round(y_mixed))
+
+          except Exception as exc:
+            # Fall back to standard training if RankMix fails for this sample
+            log.debug("RankMix failed for slide %s, falling back to standard: %s", _slide, exc)
+            logits = _embeddings_to_logits(model, feats_a, coords_a, use_amp)
+            loss = criterion(logits.float(), y)
+            y_for_metrics = y_val
+        else:
+          # -------------------------
+          # Standard training (Stage 1 or RankMix disabled)
+          # -------------------------
+          logits = _embeddings_to_logits(model, feats_a, coords_a, use_amp)
+          loss = criterion(logits.float(), y)
+          y_for_metrics = y_val
 
         # Training metrics (slide-level) - detach so metrics don't backprop.
         with torch.no_grad():
           prob_pos = torch.softmax(logits.detach().float(), dim=1)[:, 1]
           pred = torch.argmax(logits.detach(), dim=1)
-          train_y_true.append(int(y.detach().view(-1)[0].item()))
+          train_y_true.append(y_for_metrics)
           train_y_prob.append(float(prob_pos.view(-1)[0].item()))
           train_y_pred.append(int(pred.view(-1)[0].item()))
 
@@ -624,6 +762,12 @@ def fit_mil(
       f"Epoch {epoch+1}/{epochs} | [CACHE STATS] hits={cache_hits} misses={cache_misses} "
       f"hit_rate={cache_hit_rate:.1%}"
     )
+    # Log RankMix statistics if active
+    if rankmix_enabled and rankmix_count > 0:
+      log.info(
+        f"Epoch {epoch+1}/{epochs} | [RANKMIX STATS] samples={rankmix_count} "
+        f"avg_lambda={rankmix_avg_lambda:.3f}"
+      )
     log.debug("Skipped slides this epoch: train=%d val=%d", skipped_train_n, skipped_val_n)
     log.info("Train confusion_matrix:\n%s", train_cm)
     log.info("Val confusion_matrix:\n%s", metrics["cm"])

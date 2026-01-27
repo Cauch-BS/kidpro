@@ -12,7 +12,7 @@ from torch.optim import Optimizer
 
 from ..config.schema import AppCfg, SegTaskCfg
 from .lora import apply_lora
-from .patches import build_foundation, freeze_module
+from .sources import build_foundation, freeze_module
 
 
 class SimpleUpsampleDecoder(nn.Module):

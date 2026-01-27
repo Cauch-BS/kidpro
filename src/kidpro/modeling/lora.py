@@ -6,7 +6,7 @@ from typing import Any, cast
 import torch.nn as nn
 
 from ..config.schema import AppCfg
-from .patches import freeze_module
+from .sources import freeze_module
 
 log = logging.getLogger(__name__)
 

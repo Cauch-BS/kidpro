@@ -240,7 +240,7 @@ def discover_foundation_builders(
 ) -> dict[str, Callable[[AppCfg], FoundationBackbone]]:
     """
     Discovers builders from:
-      1) built-in modules in kidpro.modeling.patches.*
+      1) built-in modules in kidpro.modeling.sources.*
       2) optional external addon module files
 
     Contract per module:

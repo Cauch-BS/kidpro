@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Union, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Union, cast
 
 import torch
 import torch.nn as nn
 
-from ..torchscale.model.LongNet import make_longnet_from_name
-from .pos_embed import get_2d_sincos_pos_embed
+from ...torchscale.model.LongNet import make_longnet_from_name
+from ...utils.pos_embed import get_2d_sincos_pos_embed
+from . import SlideEncoderBackbone
+from .simple import SimpleAggregator
+
+if TYPE_CHECKING:
+    from ...config.schema import AppCfg
 
 log = logging.getLogger(__name__)
+
+
+AGGREGATOR_NAME = "longnet"
 
 
 def _infer_stride_1d(vals_int: torch.Tensor) -> torch.Tensor:
@@ -79,83 +88,6 @@ class PatchEmbed(nn.Module):
         x = self.proj(x)
         x = self.norm(x)
         return x
-
-
-class SimpleAggregator(nn.Module):
-    """
-    Simple baseline aggregator using mean/max pooling.
-    Useful for debugging to compare against LongNet.
-    """
-
-    def __init__(
-        self,
-        in_dim: int,
-        embed_dim: int,
-        pool_type: str = "mean",
-        dropout: float = 0.1,
-    ) -> None:
-        super().__init__()
-        self.in_dim = in_dim
-        self.embed_dim = embed_dim
-        self.pool_type = pool_type
-
-        self.input_norm = nn.LayerNorm(in_dim)
-        self.proj = nn.Linear(in_dim, embed_dim)
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.norm = nn.LayerNorm(embed_dim)
-
-        nn.init.xavier_uniform_(self.proj.weight)
-        if self.proj.bias is not None:
-            nn.init.constant_(self.proj.bias, 0)
-
-    def forward(
-        self,
-        x: torch.Tensor | None = None,
-        coords: torch.Tensor | None = None,
-        all_layer_embed: bool = False,
-        **kwargs: Any,  # Accept extra kwargs from PEFT wrapper (e.g., input_ids)
-    ) -> list[torch.Tensor]:
-        """
-        Args:
-            x: Tile embeddings of shape (batch, num_tiles, in_dim) or (num_tiles, in_dim)
-            coords: Tile coordinates (accepted but ignored for simple pooling)
-            all_layer_embed: Whether to return all layer embeddings (ignored, returns single embedding)
-            **kwargs: Extra keyword arguments (ignored, for PEFT compatibility)
-
-        Returns:
-            List containing single pooled embedding of shape (batch, embed_dim)
-        """
-        if x is None:
-            x = kwargs.get("x", None)
-        _ = coords if coords is not None else kwargs.get("coords", None)
-        if x is None:
-            raise TypeError("SimpleAggregator.forward requires x (either as arg or kwarg).")
-        # Normalize input
-        x = self.input_norm(x)
-        x = self.dropout(x)
-
-        # Project to embed_dim
-        x = self.proj(x)  # (..., embed_dim)
-
-        # Pool over tiles
-        if x.ndim == 2:
-            # (num_tiles, embed_dim) -> (1, embed_dim)
-            if self.pool_type == "mean":
-                pooled = x.mean(dim=0, keepdim=True)
-            elif self.pool_type == "max":
-                pooled = x.max(dim=0, keepdim=True)[0]
-            else:
-                raise ValueError(f"Unknown pool_type: {self.pool_type}")
-        else:
-            # (batch, num_tiles, embed_dim) -> (batch, embed_dim)
-            if self.pool_type == "mean":
-                pooled = x.mean(dim=1)
-            elif self.pool_type == "max":
-                pooled = x.max(dim=1)[0]
-            else:
-                raise ValueError(f"Unknown pool_type: {self.pool_type}")
-
-        return [self.norm(pooled)]
 
 
 class LongNetViT(nn.Module):
@@ -418,3 +350,49 @@ class LongNetMIL(nn.Module):
     def forward(self, x: torch.Tensor, coords: torch.Tensor | None = None) -> torch.Tensor:
         feats = self.encode_tiles(x)
         return self.encode_slide(feats, coords)
+
+
+def _resolve_longnet_weights_path(cfg: "AppCfg") -> Path:
+    weights = cfg.model.longnet_weights
+    if weights is None:
+        raise ValueError("model.longnet_weights is required to preload LongNet.")
+    if weights.source == "local":
+        return Path(weights.local_path)  # type: ignore[arg-type]
+    if weights.source == "hf_cache":
+        return Path(weights.hf_cache_path)  # type: ignore[arg-type]
+    raise ValueError(f"Unknown longnet_weights.source={weights.source!r}")
+
+
+def build(cfg: "AppCfg") -> SlideEncoderBackbone:
+    """Build a LongNetViT slide encoder from config."""
+    from ..lora import apply_lora
+    from ..sources import load_state_dict_generic
+    from . import SlideEncoderBackbone
+
+    in_chans = int(getattr(cfg.model, "foundation_dim", 1536))
+    dim = cfg.model.longnet_dim
+
+    encoder = LongNetViT(
+        in_chans=in_chans,
+        embed_dim=dim,
+        depth=cfg.model.longnet_depth,
+        slide_ngrids=cfg.model.longnet_slide_ngrids,
+        tile_size=cfg.dataset.data.patch_size,
+        max_wsi_size=cfg.model.longnet_max_wsi_size,
+        global_pool=False,
+        dropout=cfg.model.longnet_dropout,
+        input_norm=cfg.model.longnet_input_norm,
+        input_dropout=cfg.model.longnet_input_dropout,
+    )
+
+    if cfg.model.longnet_pretrained:
+        ckpt_path = _resolve_longnet_weights_path(cfg)
+        log.info("Loading LongNet weights from %s", ckpt_path)
+        encoder = load_state_dict_generic(encoder, ckpt_path)  # type: ignore[assignment]
+
+    lora_cfg = cfg.model.lora
+    apply_to = set(lora_cfg.apply_to)
+    if lora_cfg.enabled and "longnet" in apply_to:
+        encoder = apply_lora(cfg, encoder, freeze_base=True)
+
+    return SlideEncoderBackbone(encoder=encoder, embed_dim=dim)
