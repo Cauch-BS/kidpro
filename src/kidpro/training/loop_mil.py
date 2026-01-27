@@ -145,6 +145,9 @@ def _stream_slide_logits(
     feats_all = torch.from_numpy(feats_np).to(rr.device)
     coords_all = torch.from_numpy(coords_np).to(rr.device)
     tile_count = feats_all.shape[0]
+    slide_name = getattr(tile_stream, "slide_name", None)
+    if slide_name is not None:
+      log.debug("[EMB CACHE HIT] slide=%s tiles=%d", slide_name, int(tile_count))
   else:
     # Run tile_encoder and cache results
     chunk_size = cfg.dataset.data.mil_cache.chunk_size
@@ -179,6 +182,9 @@ def _stream_slide_logits(
           feats_all.detach().cpu().numpy(),
           coords_all.detach().cpu().numpy(),
         )
+        slide_name = getattr(tile_stream, "slide_name", None)
+        if slide_name is not None:
+          log.debug("[EMB CACHE WRITE] slide=%s tiles=%d", slide_name, int(tile_count))
       except Exception as exc:
         log.warning("Failed to cache tile embeddings: %s", exc)
 

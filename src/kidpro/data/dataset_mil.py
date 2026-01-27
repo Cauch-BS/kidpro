@@ -270,6 +270,20 @@ class MILDataset(Dataset):
     coords = np.asarray(group["tile_coords"])
     return embeddings, coords
 
+  def _is_tile_emb_cache_valid(self, group: Any) -> bool:
+    """Fast check (attrs/keys only) to decide whether to reuse tile embeddings cache."""
+    if not group.attrs.get("tile_emb_complete", False):
+      return False
+    if group.attrs.get("tile_emb_cache_version") != _TILE_EMB_CACHE_VERSION:
+      return False
+    if self._tile_encoder_hash is not None:
+      cached_hash = group.attrs.get("tile_emb_model_hash")
+      if cached_hash != self._tile_encoder_hash:
+        return False
+    if "tile_embeddings" not in group or "tile_coords" not in group:
+      return False
+    return True
+
   def _write_tile_embeddings(self, group: Any, embeddings: np.ndarray, coords: np.ndarray) -> None:
     """Write tile embeddings and coords to zarr group."""
     embeddings = np.asarray(embeddings, dtype=np.float32)
@@ -324,6 +338,11 @@ class MILDataset(Dataset):
     if cache_path is None:
       return
     group = self._open_zarr_group(cache_path, mode="a")
+    # If cache is already valid, don't rewrite (important when a slide can be
+    # sampled multiple times, e.g. with replacement sampling or repeated eval).
+    if self._is_tile_emb_cache_valid(group):
+      log.debug("[EMB CACHE SKIP WRITE] slide=%s (already valid)", slide_name)
+      return
     self._write_tile_embeddings(group, embeddings, coords)
 
   def _safe_iter_tiles(self, wsi: Any, slide_name: str) -> Iterable[Any]:

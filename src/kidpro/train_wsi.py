@@ -90,6 +90,26 @@ def main(hcfg: DictConfig) -> None:
       "Disabling class weights because a balanced sampler is already in use."
     )
 
+  model = build_model_mil(cfg).to(rr.device)
+  model_mil = cast(Any, model)
+  if cfg.model.lora.enabled:
+    try:
+      ckpt_path = resolve_best_model_from_mlflow(cfg, "tile_model")
+      model_mil.tile_encoder = load_state_dict_generic(cast(nn.Module, model_mil.tile_encoder), ckpt_path)
+      log.info(f"[LORA INIT] Loaded tile checkpoint: {ckpt_path}")
+    except Exception as e:
+      raise RuntimeError(
+        "Failed to resolve or load tile-trained best_model.pt for LoRA initialization."
+      ) from e
+
+  # -------------------------
+  # Compute tile_encoder hash for cache invalidation
+  # -------------------------
+  tile_encoder_hash = _compute_model_hash(cast(nn.Module, model_mil.tile_encoder))
+  ds_tr.set_tile_encoder_hash(tile_encoder_hash)
+  ds_va.set_tile_encoder_hash(tile_encoder_hash)
+  log.info("[TILE ENCODER HASH] %s", tile_encoder_hash)
+
   dl_tr = torch.utils.data.DataLoader(
     ds_tr,
     batch_size=int(cfg.train.batch_size),
@@ -111,26 +131,6 @@ def main(hcfg: DictConfig) -> None:
     prefetch_factor=4 if cfg.dataset.data.num_workers > 0 else None,
     collate_fn=_mil_collate,
   )
-
-  model = build_model_mil(cfg).to(rr.device)
-  model_mil = cast(Any, model)
-  if cfg.model.lora.enabled:
-    try:
-      ckpt_path = resolve_best_model_from_mlflow(cfg, "tile_model")
-      model_mil.tile_encoder = load_state_dict_generic(cast(nn.Module, model_mil.tile_encoder), ckpt_path)
-      log.info(f"[LORA INIT] Loaded tile checkpoint: {ckpt_path}")
-    except Exception as e:
-      raise RuntimeError(
-        "Failed to resolve or load tile-trained best_model.pt for LoRA initialization."
-      ) from e
-
-  # -------------------------
-  # Compute tile_encoder hash for cache invalidation
-  # -------------------------
-  tile_encoder_hash = _compute_model_hash(cast(nn.Module, model_mil.tile_encoder))
-  ds_tr.set_tile_encoder_hash(tile_encoder_hash)
-  ds_va.set_tile_encoder_hash(tile_encoder_hash)
-  log.info("[TILE ENCODER HASH] %s", tile_encoder_hash)
 
   # -------------------------
   # Class-weighted loss (optional)
