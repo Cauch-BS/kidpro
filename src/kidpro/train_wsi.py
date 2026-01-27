@@ -161,13 +161,27 @@ def main(hcfg: DictConfig) -> None:
   ]
   optimizer = torch.optim.AdamW(param_groups, weight_decay=cfg.train.weight_decay)
 
-  log.info(
-    "[PARAM GROUPS] slide_encoder: %d params @ lr=%.2e | classifier: %d params @ lr=%.2e",
-    sum(p.numel() for p in slide_encoder_params),
-    cfg.train.lr,
-    sum(p.numel() for p in classifier_params),
-    cfg.train.lr * cfg.train.head_lr_multiplier,
-  )
+  slide_trainable = sum(p.numel() for p in slide_encoder_params if p.requires_grad)
+  slide_total = sum(p.numel() for p in slide_encoder_params)
+  classifier_trainable = sum(p.numel() for p in classifier_params if p.requires_grad)
+
+  if slide_trainable < slide_total:
+    log.info(
+      "[PARAM GROUPS] slide_encoder: %d/%d trainable params @ lr=%.2e | classifier: %d params @ lr=%.2e",
+      slide_trainable,
+      slide_total,
+      cfg.train.lr,
+      classifier_trainable,
+      cfg.train.lr * cfg.train.head_lr_multiplier,
+    )
+  else:
+    log.info(
+      "[PARAM GROUPS] slide_encoder: %d params @ lr=%.2e | classifier: %d params @ lr=%.2e",
+      slide_trainable,
+      cfg.train.lr,
+      classifier_trainable,
+      cfg.train.lr * cfg.train.head_lr_multiplier,
+    )
 
   # -------------------------
   # Learning rate scheduler with warmup
