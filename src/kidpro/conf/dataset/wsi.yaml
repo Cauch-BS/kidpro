@@ -18,8 +18,8 @@ data:
   # Training tile size. If preprocessing uses 512px at 40x, this resize yields
   # ~20x FOV; prov_gigapath then center-crops to 224.
   patch_size: 256
-  train_ratio: 0.7
-  test_ratio: 0.1
+  train_ratio: 0.6
+  test_ratio: 0.2
   val_ratio: 0.2
   num_workers: 16
   pin_memory: true
