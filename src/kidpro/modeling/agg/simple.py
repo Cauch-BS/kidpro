@@ -93,8 +93,6 @@ class SimpleAggregator(nn.Module):
 
 def build(cfg: "AppCfg") -> SlideEncoderBackbone:
     """Build a SimpleAggregator from config."""
-
-
     in_chans = int(getattr(cfg.model, "foundation_dim", 1536))
     dim = cfg.model.longnet_dim
     pool_type = "mean" if cfg.model.aggregator_type == "mean_pool" else "max"
