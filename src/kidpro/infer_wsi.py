@@ -13,7 +13,7 @@ from .config.load import CONFIG, RuntimeResolved, resolve_best_model_from_mlflow
 from .config.schema import AppCfg, InferenceCfg
 from .data.transform import get_transforms
 from .modeling.factory_wsi import build_model_mil
-from .modeling.sources import load_state_dict_generic
+from .modeling.patches import load_state_dict_generic
 from .preprocessing.create_tiles_dataset import process_slide
 from .utils.wsidata import extract_tile_xy, open_wsidata, tile_image_to_array
 

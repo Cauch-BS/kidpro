@@ -8,7 +8,7 @@ from torch.nn import Module
 
 from ..config.schema import AppCfg
 from .lora import apply_lora
-from .sources import build_foundation, freeze_module, load_state_dict_generic
+from .patches import build_foundation, freeze_module, load_state_dict_generic
 
 log = logging.getLogger(__name__)
 
