@@ -106,10 +106,6 @@ def _as_mil_samples(batch: Any) -> list[tuple[Any, ...]]:
   raise ValueError(f"Unexpected MIL batch type: {type(batch)}")
 
 
-def _unwrap_singleton(value: Any) -> Any:
-  if isinstance(value, list) and len(value) == 1:
-    return value[0]
-  return value
 
 
 def _stream_slide_logits(
@@ -234,29 +230,19 @@ def evaluate_mil(
 
   for batch in tqdm(loader, desc="Eval", leave=False):
     for sample in _as_mil_samples(batch):
-      x, y, coords, _slide = _unpack_mil_batch(sample)
-      x = _unwrap_singleton(x)
+      x, y, _coords, _slide = _unpack_mil_batch(sample)
       y = y.to(rr.device, non_blocking=True)  # (1,)
 
-      if hasattr(x, "iter_batches"):
-        try:
-          logits, _tile_count, _cache_hit = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony=True)
-        except RuntimeError as exc:
-          if _is_skippable_tile_error(exc):
-            slide_name = str(_slide)
-            if slide_name not in skipped_slides:
-              log.debug("Skipping slide %s during eval: %s", slide_name, exc)
-              skipped_slides.add(slide_name)
-            continue
-          raise RuntimeError(f"Error during evaluation: {exc}")
-      else:
-        x = x.squeeze(0).to(rr.device, non_blocking=True)  # (N,C,H,W)
-        coords_t = coords.squeeze(0).to(rr.device, non_blocking=True) if coords is not None else None
-        if use_amp and autocast is not None:
-          with autocast(device_type="cuda"):
-            logits = model(x, coords_t)  # (1,2)
-        else:
-          logits = model(x, coords_t)
+      try:
+        logits, _tile_count, _cache_hit = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony=True)
+      except RuntimeError as exc:
+        if _is_skippable_tile_error(exc):
+          slide_name = str(_slide)
+          if slide_name not in skipped_slides:
+            log.debug("Skipping slide %s during eval: %s", slide_name, exc)
+            skipped_slides.add(slide_name)
+          continue
+        raise RuntimeError(f"Error during evaluation: {exc}")
 
       prob = torch.softmax(logits, dim=1)[:, 1]
       pred = torch.argmax(logits, dim=1)
@@ -469,40 +455,29 @@ def fit_mil(
       tile_count_total = 0
 
       for sample in _as_mil_samples(batch):
-        x, y, coords, _slide = _unpack_mil_batch(sample)
-        x = _unwrap_singleton(x)
-        y = y.to(rr.device, non_blocking=asynchrony)             # (1,)
+        x, y, _coords, _slide = _unpack_mil_batch(sample)
+        y = y.to(rr.device, non_blocking=asynchrony)  # (1,)
 
-        if hasattr(x, "iter_batches"):
-          try:
-            logits, tile_count, cache_hit = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
-          except RuntimeError as exc:
-            if _is_skippable_tile_error(exc):
-              slide_name = str(_slide)
-              if slide_name not in skipped_train_slides:
-                log.debug("Skipping slide %s during training: %s", slide_name, exc)
-                skipped_train_slides.add(slide_name)
-              continue
-            raise RuntimeError(f"Error during training: {exc}")
-          # Track cache statistics
-          if cache_hit:
-            cache_hits += 1
-          else:
-            cache_misses += 1
-          # AMP + weighted CE: criterion.weight dtype must match logits dtype.
-          # Keep model in autocast, but compute CE in fp32 for stability.
-          loss = criterion(logits.float(), y)
+        try:
+          logits, tile_count, cache_hit = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
+        except RuntimeError as exc:
+          if _is_skippable_tile_error(exc):
+            slide_name = str(_slide)
+            if slide_name not in skipped_train_slides:
+              log.debug("Skipping slide %s during training: %s", slide_name, exc)
+              skipped_train_slides.add(slide_name)
+            continue
+          raise RuntimeError(f"Error during training: {exc}")
+
+        # Track cache statistics
+        if cache_hit:
+          cache_hits += 1
         else:
-          x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)  # (N,C,H,W)
-          coords_t = coords.squeeze(0).to(rr.device, non_blocking=asynchrony) if coords is not None else None
-          tile_count = int(x.size(0))
-          if use_amp and autocast is not None:
-            with autocast(device_type="cuda"):
-              logits = model(x, coords_t)  # (1,2)
-              loss = criterion(logits.float(), y)
-          else:
-            logits = model(x, coords_t)
-            loss = criterion(logits.float(), y)
+          cache_misses += 1
+
+        # AMP + weighted CE: criterion.weight dtype must match logits dtype.
+        # Keep model in autocast, but compute CE in fp32 for stability.
+        loss = criterion(logits.float(), y)
 
         # Training metrics (slide-level) - detach so metrics don't backprop.
         with torch.no_grad():
@@ -562,32 +537,20 @@ def fit_mil(
     with torch.no_grad():
       for batch in tqdm(val_loader, desc="ValLoss", leave=False):
         for sample in _as_mil_samples(batch):
-          x, y, coords, _slide = _unpack_mil_batch(sample)
-          x = _unwrap_singleton(x)
+          x, y, _coords, _slide = _unpack_mil_batch(sample)
           y = y.to(rr.device, non_blocking=asynchrony)
 
-          if hasattr(x, "iter_batches"):
-            try:
-              logits, _tile_count, _cache_hit = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
-            except RuntimeError as exc:
-              if _is_skippable_tile_error(exc):
-                slide_name = str(_slide)
-                if slide_name not in skipped_val_slides:
-                  log.debug("Skipping slide %s during val loss: %s", slide_name, exc)
-                  skipped_val_slides.add(slide_name)
-                continue
-              raise RuntimeError(f"Error during validation: {exc}")
-            loss = criterion(logits.float(), y)
-          else:
-            x = x.squeeze(0).to(rr.device, non_blocking=asynchrony)
-            coords_t = coords.squeeze(0).to(rr.device, non_blocking=asynchrony) if coords is not None else None
-            if use_amp and autocast is not None:
-              with autocast(device_type="cuda"):
-                logits = model(x, coords_t)
-                loss = criterion(logits.float(), y)
-            else:
-              logits = model(x, coords_t)
-              loss = criterion(logits.float(), y)
+          try:
+            logits, _tile_count, _cache_hit = _stream_slide_logits(model, x, rr, cfg, use_amp, asynchrony)
+          except RuntimeError as exc:
+            if _is_skippable_tile_error(exc):
+              slide_name = str(_slide)
+              if slide_name not in skipped_val_slides:
+                log.debug("Skipping slide %s during val loss: %s", slide_name, exc)
+                skipped_val_slides.add(slide_name)
+              continue
+            raise RuntimeError(f"Error during validation: {exc}")
+          loss = criterion(logits.float(), y)
 
           val_losses.append(float(loss.item()))
 
