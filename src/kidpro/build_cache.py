@@ -30,7 +30,7 @@ from .config.load import CONFIG, resolve_best_model_from_mlflow
 from .data.dataset_mil import MILDataset, TileStream
 from .data.transform import get_transforms
 from .modeling.factory_wsi import build_model_mil
-from .modeling.patches import load_state_dict_generic
+from .modeling.sources import load_state_dict_generic
 
 log = logging.getLogger(__name__)
 
