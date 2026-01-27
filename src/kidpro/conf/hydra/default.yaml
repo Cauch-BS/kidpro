@@ -24,6 +24,13 @@ job_logging:
       stream: ext://sys.stdout
       level: INFO
 
+    file:
+      class: logging.FileHandler
+      formatter: simple
+      filename: ${hydra.runtime.output_dir}/${hydra.job.name}.log
+      mode: a
+      level: INFO
+
     debug_file:
       class: logging.FileHandler
       formatter: simple
@@ -33,4 +40,4 @@ job_logging:
 
   root:
     level: DEBUG
-    handlers: [console, debug_file]
+    handlers: [console, file, debug_file]
