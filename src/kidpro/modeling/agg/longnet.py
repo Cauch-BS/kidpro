@@ -9,11 +9,11 @@ import torch.nn as nn
 
 from ...torchscale.model.LongNet import make_longnet_from_name
 from ...utils.pos_embed import get_2d_sincos_pos_embed
-from . import SlideEncoderBackbone
 from .simple import SimpleAggregator
 
 if TYPE_CHECKING:
     from ...config.schema import AppCfg
+    from . import SlideEncoderBackbone
 
 log = logging.getLogger(__name__)
 

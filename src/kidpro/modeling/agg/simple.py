@@ -5,10 +5,9 @@ from typing import TYPE_CHECKING, Any
 import torch
 import torch.nn as nn
 
-from . import SlideEncoderBackbone
-
 if TYPE_CHECKING:
     from ...config.schema import AppCfg
+    from . import SlideEncoderBackbone
 
 
 AGGREGATOR_NAME = "simple"
@@ -91,8 +90,10 @@ class SimpleAggregator(nn.Module):
         return [self.norm(pooled)]
 
 
-def build(cfg: "AppCfg") -> SlideEncoderBackbone:
+def build(cfg: "AppCfg") -> "SlideEncoderBackbone":
     """Build a SimpleAggregator from config."""
+    from . import SlideEncoderBackbone
+
     in_chans = int(getattr(cfg.model, "foundation_dim", 1536))
     dim = cfg.model.longnet_dim
     pool_type = "mean" if cfg.model.aggregator_type == "mean_pool" else "max"
