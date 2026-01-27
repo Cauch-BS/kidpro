@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 import torch.nn as nn
@@ -113,10 +113,13 @@ def build_mil(cfg: "AppCfg", tile_encoder: nn.Module, num_classes: int) -> MILTe
 
     This returns a complete MILTemplate, not just a slide encoder.
     """
-    from .longnet import LongNetMIL  # Import internally to avoid circular dependency
+    from .longnet import (  # Import internally to avoid circular dependency
+        LongNetMIL,
+        SlideEncoder,
+    )
 
     slide_encoder_result = build(cfg)
-    slide_encoder = slide_encoder_result.encoder
+    slide_encoder = cast(SlideEncoder, slide_encoder_result.encoder)
 
     model = LongNetMIL(
         tile_encoder=tile_encoder,

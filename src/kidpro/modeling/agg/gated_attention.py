@@ -16,6 +16,59 @@ log = logging.getLogger(__name__)
 AGGREGATOR_NAME = "gated_attention"
 
 
+class GatedAttentionSlideEncoder(nn.Module):
+    """
+    Wrapper module for gated attention mechanism.
+    Exposes attention components as a single module for compatibility with training code.
+    """
+    def __init__(
+        self,
+        feat_dim: int,
+        hidden_dim: int = 128,
+        dropout: float = 0.25,
+    ) -> None:
+        super().__init__()
+        # V: value network (what information to extract)
+        self.attention_V = nn.Sequential(
+            nn.Linear(feat_dim, hidden_dim),
+            nn.Tanh()
+        )
+        # U: gate network (what to pay attention to)
+        self.attention_U = nn.Sequential(
+            nn.Linear(feat_dim, hidden_dim),
+            nn.Sigmoid()
+        )
+        # w: attention weights projection
+        self.attention_w = nn.Linear(hidden_dim, 1)
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+    def forward(self, feats: torch.Tensor) -> torch.Tensor:
+        """
+        Apply gated attention to tile features.
+
+        Args:
+            feats: Tile features of shape (num_tiles, feat_dim)
+
+        Returns:
+            Slide embedding of shape (1, feat_dim)
+        """
+        # Apply dropout to features
+        H = self.dropout(feats)  # (num_tiles, feat_dim)
+
+        # Gated attention
+        A_V = self.attention_V(H)  # (num_tiles, hidden_dim)
+        A_U = self.attention_U(H)  # (num_tiles, hidden_dim)
+        A = self.attention_w(A_V * A_U)  # (num_tiles, 1) - element-wise gate
+
+        # Softmax over instances to get attention weights
+        A = torch.softmax(A, dim=0)  # (num_tiles, 1)
+
+        # Weighted sum of features
+        M = torch.sum(A * H, dim=0, keepdim=True)  # (1, feat_dim)
+
+        return M
+
+
 class GatedAttentionMIL(MILTemplate):
     """
     Gated Attention MIL (Ilse et al. 2018)
@@ -53,26 +106,21 @@ class GatedAttentionMIL(MILTemplate):
         self.feat_dim = feat_dim
         self.num_classes = num_classes
 
-        # Gated attention mechanism
-        # V: value network (what information to extract)
-        self.attention_V = nn.Sequential(
-            nn.Linear(feat_dim, hidden_dim),
-            nn.Tanh()
+        # Create slide encoder module (for compatibility with training code)
+        self.slide_encoder = GatedAttentionSlideEncoder(
+            feat_dim=feat_dim,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
         )
 
-        # U: gate network (what to pay attention to)
-        self.attention_U = nn.Sequential(
-            nn.Linear(feat_dim, hidden_dim),
-            nn.Sigmoid()
-        )
-
-        # w: attention weights projection
-        self.attention_w = nn.Linear(hidden_dim, 1)
+        # Expose attention components for direct access (used in forward methods)
+        self.attention_V = self.slide_encoder.attention_V
+        self.attention_U = self.slide_encoder.attention_U
+        self.attention_w = self.slide_encoder.attention_w
+        self.dropout = self.slide_encoder.dropout
 
         # Classifier head
         self.classifier = nn.Linear(feat_dim, num_classes)
-
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
     def encode_tiles(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -99,21 +147,7 @@ class GatedAttentionMIL(MILTemplate):
         Returns:
             Slide embedding of shape (1, feat_dim)
         """
-        # Apply dropout to features
-        H = self.dropout(feats)  # (num_tiles, feat_dim)
-
-        # Gated attention
-        A_V = self.attention_V(H)  # (num_tiles, hidden_dim)
-        A_U = self.attention_U(H)  # (num_tiles, hidden_dim)
-        A = self.attention_w(A_V * A_U)  # (num_tiles, 1) - element-wise gate
-
-        # Softmax over instances to get attention weights
-        A = torch.softmax(A, dim=0)  # (num_tiles, 1)
-
-        # Weighted sum of features
-        M = torch.sum(A * H, dim=0, keepdim=True)  # (1, feat_dim)
-
-        return M
+        return self.slide_encoder(feats) # type: ignore[no-any-return]
 
     def classify_slide_embedding(self, embedding: torch.Tensor) -> torch.Tensor:
         """
@@ -145,22 +179,11 @@ class GatedAttentionMIL(MILTemplate):
         # Encode tiles
         feats = self.encode_tiles(x)  # (num_tiles, feat_dim)
 
-        # Apply dropout to features
-        H = self.dropout(feats)  # (num_tiles, feat_dim)
-
-        # Gated attention
-        A_V = self.attention_V(H)  # (num_tiles, hidden_dim)
-        A_U = self.attention_U(H)  # (num_tiles, hidden_dim)
-        A = self.attention_w(A_V * A_U)  # (num_tiles, 1) - element-wise gate
-
-        # Softmax over instances to get attention weights
-        A = torch.softmax(A, dim=0)  # (num_tiles, 1)
-
-        # Weighted sum of features
-        M = torch.sum(A * H, dim=0, keepdim=True)  # (1, feat_dim)
+        # Encode slide embedding using gated attention
+        slide_embedding = self.encode_slide_embedding(feats, coords)  # (1, feat_dim)
 
         # Classification
-        logits = self.classifier(M)  # (1, num_classes)
+        logits = self.classifier(slide_embedding)  # (1, num_classes)
 
         return logits # type: ignore[no-any-return]
 

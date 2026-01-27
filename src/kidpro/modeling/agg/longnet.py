@@ -399,7 +399,7 @@ def build_mil(cfg: "AppCfg", tile_encoder: nn.Module, num_classes: int) -> MILTe
     This returns a complete MILTemplate, not just a slide encoder.
     """
     slide_encoder_result = build(cfg)
-    slide_encoder = slide_encoder_result.encoder
+    slide_encoder = cast(SlideEncoder, slide_encoder_result.encoder)
 
     model = LongNetMIL(
         tile_encoder=tile_encoder,
