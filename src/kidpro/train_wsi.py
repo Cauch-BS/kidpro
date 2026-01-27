@@ -17,8 +17,9 @@ from .data.dataset_mil import MILDataset
 from .data.split_mil import build_mil_split_csv
 from .data.transform import get_transforms
 from .modeling.factory_wsi import build_model_mil
-from .modeling.patches import load_state_dict_generic
+from .modeling.sources import load_state_dict_generic
 from .training.loop_mil import fit_mil
+from .training.rankmix import RankMixSampler, TileScorer
 
 log = logging.getLogger(__name__)
 
@@ -206,7 +207,64 @@ def main(hcfg: DictConfig) -> None:
       scheduler = CosineAnnealingLR(optimizer, T_max=total_steps)
       log.info("[SCHEDULER] Cosine annealing for %d steps (no warmup)", total_steps)
 
-  best_path = fit_mil(cfg, rr, model, dl_tr, dl_va, criterion, optimizer, scheduler=scheduler)
+  # -------------------------
+  # RankMix initialization (optional - Stage 2 training)
+  # -------------------------
+  rankmix_scorer = None
+  rankmix_sampler = None
+
+  if cfg.train.rankmix.enabled:
+    # Load Stage 1 checkpoint (required for Stage 2)
+    stage1_ckpt = cfg.train.rankmix.stage1_checkpoint
+    if stage1_ckpt is None:
+      raise ValueError(
+        "[RANKMIX] stage1_checkpoint is required when rankmix.enabled=true. "
+        "First run Stage 1 training with rankmix.enabled=false."
+      )
+
+    log.info("[RANKMIX] Loading Stage 1 checkpoint: %s", stage1_ckpt)
+    state_dict = torch.load(stage1_ckpt, map_location=rr.device)
+    model.load_state_dict(state_dict)
+    log.info("[RANKMIX] Stage 1 model loaded successfully")
+
+    # Get embedding dimension from model config
+    embed_dim = cfg.model.longnet_dim  # Typically 1536 for GigaPath
+
+    # Initialize TileScorer
+    rankmix_scorer = TileScorer(embed_dim=embed_dim).to(rr.device)
+
+    # Add scorer parameters to optimizer
+    scorer_params = list(rankmix_scorer.parameters())
+    optimizer.add_param_group({
+      "params": scorer_params,
+      "lr": cfg.train.lr,
+      "name": "rankmix_scorer",
+    })
+    log.info(
+      "[RANKMIX] TileScorer initialized with %d params @ lr=%.2e",
+      sum(p.numel() for p in scorer_params),
+      cfg.train.lr,
+    )
+
+    # Initialize RankMixSampler with training dataframe
+    rankmix_sampler = RankMixSampler(
+      df=df_tr,
+      minority_label=1,  # GT=True is the minority class
+      minority_ratio=cfg.train.rankmix.minority_sampling_ratio,
+    )
+
+    log.info(
+      "[RANKMIX] Stage 2 Training: alpha=%.2f, minority_ratio=%.2f",
+      cfg.train.rankmix.alpha,
+      cfg.train.rankmix.minority_sampling_ratio,
+    )
+
+  best_path = fit_mil(
+    cfg, rr, model, dl_tr, dl_va, criterion, optimizer, scheduler=scheduler,
+    rankmix_scorer=rankmix_scorer,
+    rankmix_sampler=rankmix_sampler,
+    train_dataset=ds_tr if cfg.train.rankmix.enabled else None,
+  )
   log.info(f"[RUN COMPLETE] run_dir={run_dir} best={best_path}")
 
 

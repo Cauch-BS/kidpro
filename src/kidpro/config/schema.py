@@ -295,6 +295,41 @@ class EarlyStoppingCfg(BaseModel):
     return self
 
 
+class RankMixCfg(BaseModel):
+  """RankMix data augmentation for class imbalance (Chen et al., CVPR 2023).
+
+  RankMix mixes ranked tile embeddings from pairs of WSIs to create augmented
+  training samples. This is particularly effective for severe class imbalance.
+
+  Two-stage training (explicit):
+    1. Stage 1: Run with rankmix.enabled=false (standard MIL training)
+    2. Stage 2: Run with rankmix.enabled=true and rankmix.stage1_checkpoint pointing
+       to the Stage 1 best_model.pt
+
+  See docs/rankmix.md for usage details.
+  """
+  enabled: bool = False
+  alpha: float = 1.0  # Beta distribution parameter for mixing ratio λ
+  minority_sampling_ratio: float = 0.7  # Probability of sampling minority class in pairs
+  stage1_checkpoint: Optional[Path] = None  # Path to Stage 1 model checkpoint (required when enabled=true)
+
+  @model_validator(mode="after")
+  def _validate(self) -> "RankMixCfg":
+    if self.alpha <= 0:
+      raise ValueError("train.rankmix.alpha must be > 0.")
+    if not (0.0 <= self.minority_sampling_ratio <= 1.0):
+      raise ValueError("train.rankmix.minority_sampling_ratio must be in [0, 1].")
+    if self.enabled and self.stage1_checkpoint is None:
+      raise ValueError(
+        "train.rankmix.stage1_checkpoint is required when rankmix.enabled=true. "
+        "First run Stage 1 training with rankmix.enabled=false, then provide the "
+        "path to best_model.pt from that run."
+      )
+    if self.stage1_checkpoint is not None and not self.stage1_checkpoint.exists():
+      raise ValueError(f"train.rankmix.stage1_checkpoint does not exist: {self.stage1_checkpoint}")
+    return self
+
+
 class TrainCfg(BaseModel):
   batch_size: int = 16
   epochs: int = 50
@@ -306,6 +341,9 @@ class TrainCfg(BaseModel):
   # Default to a single mechanism to avoid "double compensation".
   use_class_weights: bool = False
   use_balanced_sampling: bool = True
+
+  # RankMix data augmentation (optional, disabled by default)
+  rankmix: RankMixCfg = Field(default_factory=RankMixCfg)
 
   # Optimizer settings
   weight_decay: float = 0.01
