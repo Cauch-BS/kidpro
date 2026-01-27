@@ -30,5 +30,3 @@ data:
     compression: none
     memory_max_slides: 0
     cache_pooled_embeddings: true
-    pooled_embeddings_key: pooled_emb
-    pooled_embeddings_tag: null

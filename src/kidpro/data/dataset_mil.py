@@ -143,8 +143,6 @@ class MILDataset(Dataset):
     self.tiles_key = cfg.dataset.paths.tiles_key
     self.transform = transform
     self.cache_cfg: MILCacheCfg = cfg.dataset.data.mil_cache
-    self.pooled_emb_key = self.cache_cfg.pooled_embeddings_key
-    self.pooled_emb_tag = self.cache_cfg.pooled_embeddings_tag
     self.wsi_dir = Path(cfg.dataset.paths.wsi_dir) if cfg.dataset.paths.wsi_dir else None
     self.wsi_ext = cfg.dataset.paths.wsi_ext or ".svs"
     if not self.wsi_ext.startswith("."):
