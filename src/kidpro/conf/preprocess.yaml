@@ -1,5 +1,6 @@
 defaults:
   - hydra: preprocess
+  - hydra/job_logging: debug_file
   - _self_
 
 paths:

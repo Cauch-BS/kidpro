@@ -1,5 +1,6 @@
 defaults:
   - hydra: patch
+  - hydra/job_logging: debug_file
   - _self_
 
 patch:

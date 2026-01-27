@@ -1,5 +1,6 @@
 defaults:
 - hydra: default
+- hydra/job_logging: debug_file
 - model: prov_gigapath
 - train: default
 - dataset: glom 
