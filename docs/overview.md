@@ -1,27 +1,20 @@
 # Overview
 
-KidPro is a renal pathology pipeline that combines patch-level segmentation and
-slide-level classification:
+KidPro is a renal pathology pipeline that combines patch-level segmentation and slide-level classification for renal biopsy analysis.
 
-- Patch generation from XML/SVS annotations (glomerulus, IFTA, inflammation).
-- Tile segmentation training on patch datasets.
-- WSI MIL training on tiles read from wsidata caches built from whole-slide images.
-- WSI inference that can auto-tile a slide and run classification.
+## Components
 
-End-to-end flow (default):
+- **Patch generation**: Creates image+mask patches from XML/SVS annotations (glomerulus, IFTA, inflammation)
+- **Tile segmentation**: Trains segmentation models on patch datasets
+- **WSI MIL training**: Trains slide-level classifiers using tiles from wsidata caches
+- **WSI inference**: Auto-tiles slides and runs classification
 
-1. Generate segmentation patches from annotations.
-2. Preprocess WSIs into wsidata caches (and optional patches).
-3. Train tile segmentation (`kidpro.train_tile`).
-4. Train WSI MIL (`kidpro.train_wsi` with frozen tile encoder).
-5. Run WSI inference (`kidpro.infer_wsi`).
+## End-to-End Workflow
 
-Key entrypoints:
+1. Generate segmentation patches from annotations
+2. Preprocess WSIs into wsidata caches (and optional patches)
+3. Train tile segmentation
+4. Train WSI MIL (with frozen tile encoder)
+5. Run WSI inference
 
-- Patch generation: `python -m kidpro.patch`
-- Preprocessing: `python -m kidpro.preprocessing`
-- Tile training: `python -m kidpro.train_tile`
-- WSI training: `python -m kidpro.train_wsi`
-- WSI inference: `python -m kidpro.infer_wsi inference.wsi_path = /path/to/slide.svs`
-
-See also: `setup.md`, `data.md`, `training.md`.
+See [setup.md](setup.md) for installation, [training.md](training.md) for detailed training workflows, and [data.md](data.md) for dataset formats.

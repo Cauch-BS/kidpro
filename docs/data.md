@@ -1,23 +1,24 @@
 # Data and Datasets
 
-## Patch generation (segmentation)
+## Patch Generation (Segmentation)
 
 Patch generation uses XML annotations and SVS slides to create an image+mask dataset.
-Default config: `kidpro/conf/patch/default.yaml`.
 
-Command:
+**Default config**: `kidpro/conf/patch/default.yaml`
+
+**Command**:
 
 ```bash
 python -m kidpro.patch
 ```
 
-Inputs:
+**Inputs**:
 
 - `patch.paths.svs_dir`: directory with `*.svs`
 - `patch.paths.xml_dir`: directory with annotation `*.xml`
 - `patch.segmentation_type`: one of `glomerulus`, `ifta`, `inflammation`
 
-Outputs (by default):
+**Outputs** (by default):
 
 ```text
 <out_home>/<output_map>/<SlideName>/
@@ -27,7 +28,7 @@ Outputs (by default):
 
 The `layer_ids` list controls which mask layers are produced.
 
-## Segmentation training CSV
+## Segmentation Training CSV
 
 `kidpro.train_tile` builds a patch-level CSV in the Hydra run directory. The CSV has:
 
@@ -37,34 +38,32 @@ The `layer_ids` list controls which mask layers are produced.
 
 Splits are generated using the ratios in `kidpro/conf/dataset/*.yaml`.
 
-## MIL preprocessing (WSI to wsidata cache + patches)
+## MIL Preprocessing (WSI to wsidata Cache + Patches)
 
-Preprocessing builds wsidata caches for each slide and (optionally) exports
-patch tiles into the MIL layout expected by `MILDataset`. Default config:
-`kidpro/conf/preprocess.yaml`.
+Preprocessing builds wsidata caches for each slide and (optionally) exports patch tiles into the MIL layout expected by `MILDataset`.
 
-Command:
+**Default config**: `kidpro/conf/preprocess.yaml`
+
+**Command**:
 
 ```bash
 python -m kidpro.preprocessing
 ```
 
-Required label CSV columns: `SlideName`, `GT`
+**Required label CSV columns**: `SlideName`, `GT`
 
-WSI discovery:
+**WSI discovery**:
 
-- If the label CSV includes `image` or `image_path`, those are used.
-- Otherwise, the path is resolved from `paths.wsi_dir` + `paths.wsi_ext`.
+- If the label CSV includes `image` or `image_path`, those are used
+- Otherwise, the path is resolved from `paths.wsi_dir` + `paths.wsi_ext`
 
-Output layout:
+**Output layout**:
 
 ```text
 <root_dir>/<SlideName>/images/<SlideName>_X0Y0_XXXXXX_YYYYYY.png
 <cache_dir>/<SlideName>.zarr
 ```
 
-Tile filenames encode top-left coordinates in the WSI. The wsidata cache is
-used directly by MIL training/inference; patch export is for optional inspection
-or compatibility.
+Tile filenames encode top-left coordinates in the WSI. The wsidata cache is used directly by MIL training/inference; patch export is for optional inspection or compatibility.
 
-See also: `configuration.md`, `training.md`.
+See also: [configuration.md](configuration.md), [training.md](training.md), [setup.md](setup.md).

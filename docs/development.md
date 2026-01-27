@@ -1,6 +1,6 @@
 # Development
 
-## Repo layout
+## Repo Layout
 
 - `src/kidpro/`: main package
   - `patch/`, `preprocessing/`: data generation
@@ -10,7 +10,7 @@
 - `kidpro/conf/`: Hydra config tree
 - `models/`: local checkpoint location (not versioned)
 
-## Entry points
+## Entry Points
 
 ```bash
 python -m kidpro.patch
@@ -20,24 +20,24 @@ python -m kidpro.train_wsi
 python -m kidpro.infer_wsi
 ```
 
-## Linting and type checks
+## Linting and Type Checks
 
-Configured tools:
+**Configured tools**:
 
 - Ruff: `ruff.toml`
 - Mypy: `mypy.ini`
 
-Common commands:
+**Common commands**:
 
 ```bash
 ruff check .
 mypy src/kidpro
 ```
 
-## Extension points
+## Extension Points
 
-- Add new datasets under `kidpro/conf/dataset/*.yaml`.
-- Add new backbones under `src/kidpro/modeling/sources/`.
-- Extend model selection in `src/kidpro/modeling/factory_*`.
+- Add new datasets under `kidpro/conf/dataset/*.yaml`
+- Add new backbones under `src/kidpro/modeling/sources/`
+- Extend model selection in `src/kidpro/modeling/factory_*`
 
-See also: `setup.md`, `configuration.md`.
+See also: [setup.md](setup.md), [configuration.md](configuration.md), [architecture.md](architecture.md).

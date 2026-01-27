@@ -1,57 +1,64 @@
 # Training
 
-## Tile segmentation training
+## Tile Segmentation Training
 
-Entrypoint: `python -m kidpro.train_tile`  
-Config: `kidpro/conf/config.yaml` (defaults to `dataset=glom`, `model=prov_gigapath`)
+**Entrypoint**: `python -m kidpro.train_tile`  
+**Config**: `kidpro/conf/config.yaml` (defaults to `dataset=glom`, `model=prov_gigapath`)
 
-Typical run:
+### Basic Usage
 
 ```bash
 python -m kidpro.train_tile
 ```
 
-Common overrides:
+### Common Overrides
 
 ```bash
 python -m kidpro.train_tile dataset=glom train.batch_size=8 train.lr=1e-4
 python -m kidpro.train_tile model=uni2_h
 ```
 
-Outputs:
+### Outputs
 
-- Best checkpoint saved to `<run_dir>/best_model.pt` (see `kidpro/conf/core/default.yaml`)
-- Resolved config at `<run_dir>/config_resolved.yaml`
-- Environment snapshot at `<run_dir>/training_env.json`
+- Best checkpoint: `<run_dir>/best_model.pt`
+- Resolved config: `<run_dir>/config_resolved.yaml`
+- Environment snapshot: `<run_dir>/training_env.json`
 
-## WSI MIL training
+## WSI MIL Training
 
-Entrypoint: `python -m kidpro.train_wsi`  
-Config: `kidpro/conf/config_wsi.yaml` (defaults to `dataset=wsi`)
+**Entrypoint**: `python -m kidpro.train_wsi`  
+**Config**: `kidpro/conf/config_wsi.yaml` (defaults to `dataset=wsi`)
 
-Important: WSI training reads tiles from wsidata caches created by
-`kidpro.preprocessing`. Patch export is optional for inspection only.
-WSI training also requires the tile encoder to be frozen:
+### Requirements
+
+- WSI training reads tiles from wsidata caches created by `kidpro.preprocessing`
+- Patch export is optional for inspection only
+- **The tile encoder must be frozen**:
 
 ```bash
 python -m kidpro.train_wsi model.freeze_backbone=true
 ```
 
-Common overrides:
+### Common Overrides
 
 ```bash
 python -m kidpro.train_wsi train.lr=1e-4 train.epochs=50
 python -m kidpro.train_wsi dataset.paths.label_csv=/path/to/labels.csv
 ```
 
-LoRA initialization (optional):
+### Advanced Options
 
-- If `model.lora.enabled=true`, the tile encoder is initialized from MLflow.
-- Configure `mlflow.enabled=true` and `mlflow.registry_model_name`.
+**LoRA initialization** (optional):
+- Set `model.lora.enabled=true` to initialize tile encoder from MLflow
+- Configure `mlflow.enabled=true` and `mlflow.registry_model_name`
 
-Outputs:
+**RankMix augmentation** (for class imbalance):
+- See [rankmix.md](rankmix.md) for two-stage training with RankMix data augmentation
+- Useful when dealing with severe class imbalance
 
-- Best checkpoint saved to `<run_dir>/best_model.pt`
-- Summary JSON at `<run_dir>/best_summary.json`
+### Outputs
 
-See also: `configuration.md`, `data.md`.
+- Best checkpoint: `<run_dir>/best_model.pt`
+- Summary JSON: `<run_dir>/best_summary.json`
+
+See also: [configuration.md](configuration.md), [data.md](data.md), [rankmix.md](rankmix.md).

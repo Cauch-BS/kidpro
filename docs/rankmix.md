@@ -55,7 +55,7 @@ train:
 RankMix operates on **tile embeddings** (the output of the frozen tile encoder) before
 they are passed to the LongNet aggregator:
 
-```
+```text
 Without RankMix (Stage 1 / default):
   Slide A tiles → Tile Encoder → Embeddings A → LongNet → Prediction
 
@@ -71,11 +71,13 @@ what data (embeddings) LongNet sees during training.
 ### Two-Stage Training (Explicit Runs)
 
 **Stage 1** (separate run with `rankmix.enabled=false`):
+
 - Standard MIL training with LongNet
 - Model learns slide classification
 - Saves `best_model.pt` checkpoint
 
 **Stage 2** (separate run with `rankmix.enabled=true`):
+
 - Loads Stage 1 checkpoint
 - Initializes TileScorer for ranking tiles
 - For each training slide, samples a partner slide (biased toward minority class)
@@ -98,7 +100,7 @@ The key to addressing class imbalance is the `minority_sampling_ratio` parameter
 Consider 100 slides with 10 minority (GT=True) and 90 majority (GT=False):
 
 | Metric | Without RankMix | With RankMix |
-|--------|-----------------|--------------|
+| --- | --- | --- |
 | Iterations per epoch | 100 | 100 |
 | Minority in training samples | 10% (natural) | ~70% (via pairing) |
 | Unique samples possible | 100 | Combinatorially large |
@@ -106,7 +108,7 @@ Consider 100 slides with 10 minority (GT=True) and 90 majority (GT=False):
 ## Configuration Options
 
 | Parameter | Default | Description |
-|-----------|---------|-------------|
+| --- | --- | --- |
 | `enabled` | `false` | Enable RankMix augmentation (Stage 2 training) |
 | `alpha` | `1.0` | Beta distribution parameter for λ; higher = more uniform mixing ratios |
 | `minority_sampling_ratio` | `0.7` | Probability of sampling minority class in pairs |
@@ -114,7 +116,7 @@ Consider 100 slides with 10 minority (GT=True) and 90 majority (GT=False):
 
 ### Parameter Tuning Tips
 
-- **alpha**: 
+- **alpha**:
   - `alpha=1.0` gives uniform distribution over λ ∈ [0, 1]
   - `alpha < 1.0` biases toward extreme values (0 or 1)
   - `alpha > 1.0` biases toward 0.5 (equal mixing)
@@ -137,7 +139,7 @@ and is the recommended starting point.
 
 When RankMix is enabled (Stage 2), you'll see logging like:
 
-```
+```text
 [RANKMIX] Loading Stage 1 checkpoint: /path/to/stage1/best_model.pt
 [RANKMIX] Stage 1 model loaded successfully
 [RANKMIX] TileScorer initialized with 1180417 params @ lr=3.00e-05
@@ -182,22 +184,25 @@ continuous target values in [0, 1].
 ## Troubleshooting
 
 ### RankMix not starting
+
 - Check that `rankmix.enabled: true` is set
 - Verify Stage 1 has completed (check `stage1_epochs`)
 - Look for "[RANKMIX] Starting Stage 2" in logs
 
 ### Performance not improving
+
 - Ensure sufficient Stage 1 training for TileScorer to learn
 - Try adjusting `minority_sampling_ratio` (higher for severe imbalance)
 - Consider increasing `alpha` for more balanced mixing
 
 ### Memory issues
+
 - RankMix requires loading two slides per iteration
 - Reduce `batch_size` if needed
 - Ensure embedding cache is enabled for efficiency
 
 ## References
 
-- Chen, Y.-C., & Lu, C.-S. (2023). RankMix: Data Augmentation for Weakly Supervised 
-  Learning of Classifying Whole Slide Images with Diverse Sizes and Imbalanced 
+- Chen, Y.-C., & Lu, C.-S. (2023). RankMix: Data Augmentation for Weakly Supervised
+  Learning of Classifying Whole Slide Images with Diverse Sizes and Imbalanced
   Categories. CVPR 2023.

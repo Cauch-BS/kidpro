@@ -1,9 +1,8 @@
 # Configuration
 
-KidPro uses Hydra for configuration. The main configs live under `kidpro/conf/` and are
-selected by module entrypoints.
+KidPro uses Hydra for configuration. The main configs live under `kidpro/conf/` and are selected by module entrypoints.
 
-Key configs:
+## Key Config Files
 
 - `kidpro/conf/config.yaml`: tile segmentation training
 - `kidpro/conf/config_wsi.yaml`: WSI MIL training
@@ -12,6 +11,8 @@ Key configs:
 - `kidpro/conf/patch/*.yaml`: patch generation
 - `kidpro/conf/dataset/*.yaml`: dataset presets
 - `kidpro/conf/model/*.yaml`: model presets
+
+## Config Structure
 
 Hydra defaults specify the active presets. Example from `kidpro/conf/config.yaml`:
 
@@ -26,7 +27,7 @@ defaults:
   - _self_
 ```
 
-Common override patterns:
+## Common Override Patterns
 
 ```bash
 python -m kidpro.train_tile dataset=glom
@@ -37,15 +38,15 @@ python -m kidpro.infer_wsi inference.cache_dir=/path/to/wsidata_cache
 python -m kidpro.preprocessing preprocess.export_patches=false
 ```
 
-Run directories:
+## Run Directories
 
-- Hydra changes the working directory to a unique run dir.
-- The run dir is stored in `cfg.run_dir` and is used for outputs.
+- Hydra changes the working directory to a unique run dir
+- The run dir is stored in `cfg.run_dir` and is used for outputs
 
-Config export:
+## Config Export
 
 - Resolved config: `config_resolved.yaml`
 - Environment snapshot: `training_env.json`
 - Best checkpoint: `best_model.pt`
 
-See also: `training.md`, `inference.md`.
+See also: [training.md](training.md), [inference.md](inference.md), [development.md](development.md).

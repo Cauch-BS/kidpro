@@ -11,13 +11,13 @@
 
 ## Environment
 
-Use the provided conda environment:
+**Using conda** (recommended):
 
 ```bash
 conda env create -f conda/environment.yml && conda activate kidpro
 ```
 
-If you prefer pip:
+**Using pip**:
 
 ```bash
 python -m venv .venv
@@ -25,14 +25,13 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-## Model weights
+## Model Weights
 
-WSI inference falls back to local weights if MLflow resolution fails or is disabled.
-Place the checkpoint at: `models/best_model.pt`. One is provided in the repository, and you can replace it with your own model.
+WSI inference falls back to local weights if MLflow resolution fails or is disabled. Place the checkpoint at `models/best_model.pt`. One is provided in the repository, and you can replace it with your own model.
 
 You can also override this with `inference.fallback_weights`.
 
-## Sanity check
+## Sanity Check
 
 Confirm entry points are reachable:
 
@@ -42,4 +41,4 @@ python -m kidpro.train_wsi --help
 python -m kidpro.infer_wsi --help
 ```
 
-See also: `configuration.md`, `data.md`.
+See also: [configuration.md](configuration.md), [data.md](data.md), [overview.md](overview.md).

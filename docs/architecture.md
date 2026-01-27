@@ -34,4 +34,4 @@ Key components:
 - `kidpro.train_wsi`: trains WSI MIL classifier on wsidata tiles.
 - `kidpro.infer_wsi`: builds/reuses wsidata cache and runs classification.
 
-See also: `overview.md`, `training.md`, `inference.md`.
+See also: [overview.md](overview.md), [training.md](training.md), [inference.md](inference.md), [data.md](data.md).
