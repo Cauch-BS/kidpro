@@ -10,7 +10,7 @@ defaults:
 # CSV inference + optional checkpoint ensembling.
 infer_ensem:
   # --- Input / output ---
-  csv_path: /path/to/label_or_split.csv
+  csv_path: /home/khdp-user/workspace/dataset/CSV/GT_label.csv
   output_dir: ${hydra:run.dir}
   output_csv: submission.csv
 
