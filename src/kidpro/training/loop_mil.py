@@ -267,7 +267,8 @@ def evaluate_mil(
 
   y_true: list[int] = []
   y_prob: list[float] = []
-  y_pred: list[int] = []
+  # Argmax predictions (kept for diagnostics).
+  y_pred_argmax: list[int] = []
   pos_logits: list[float] = []
   margins: list[float] = []
 
@@ -304,7 +305,7 @@ def evaluate_mil(
 
       y_true.append(int(y.item()))
       y_prob.append(float(prob.item()))
-      y_pred.append(int(pred.item()))
+      y_pred_argmax.append(int(pred.item()))
 
   # FIXED: Handle empty validation set
   if not y_true:
@@ -338,12 +339,8 @@ def evaluate_mil(
     }
 
   y_true_arr = np.array(y_true)
-  y_pred_arr = np.array(y_pred)
+  y_pred_argmax_arr = np.array(y_pred_argmax)
   y_prob_arr = np.array(y_prob)
-
-  # Basic metrics
-  acc = accuracy_score(y_true, y_pred)
-  macro_f1 = f1_score(y_true, y_pred, average="macro", zero_division=0)
 
   # AUC (only if both classes present)
   auc: Optional[float] = None
@@ -355,18 +352,25 @@ def evaluate_mil(
   if len(set(y_true)) > 1:
     pr_auc = float(average_precision_score(y_true, y_prob))
 
-  # Confusion matrix and counts
-  cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+  # Threshold tuning (optimize macro-F1 on val probabilities).
+  best_thr, f1_at_best_thr = _find_best_threshold(y_true, y_prob)
+
+  # Primary eval metrics: computed using tuned threshold (binary).
+  y_pred_best_arr = (y_prob_arr >= best_thr).astype(int)
+  acc = float(accuracy_score(y_true_arr, y_pred_best_arr))
+  macro_f1 = float(f1_score(y_true_arr, y_pred_best_arr, average="macro", zero_division=0))
+  cm = confusion_matrix(y_true_arr, y_pred_best_arr, labels=[0, 1])
   true_counts = {0: int(np.sum(y_true_arr == 0)), 1: int(np.sum(y_true_arr == 1))}
-  pred_counts = {0: int(np.sum(y_pred_arr == 0)), 1: int(np.sum(y_pred_arr == 1))}
-
-  # Positive rates
-  pred_pos_rate = float(np.mean(y_pred_arr == 1))
+  pred_counts = {0: int(np.sum(y_pred_best_arr == 0)), 1: int(np.sum(y_pred_best_arr == 1))}
+  pred_pos_rate = float(np.mean(y_pred_best_arr == 1))
   true_pos_rate = float(np.mean(y_true_arr == 1))
+  precision = float(precision_score(y_true_arr, y_pred_best_arr, zero_division=0))
+  recall = float(recall_score(y_true_arr, y_pred_best_arr, zero_division=0))
 
-  # Precision/recall for positive class
-  precision = float(precision_score(y_true, y_pred, zero_division=0))
-  recall = float(recall_score(y_true, y_pred, zero_division=0))
+  # Argmax diagnostics (kept for debugging; not used for early stopping/checkpointing).
+  acc_argmax = float(accuracy_score(y_true_arr, y_pred_argmax_arr))
+  macro_f1_argmax = float(f1_score(y_true_arr, y_pred_argmax_arr, average="macro", zero_division=0))
+  cm_argmax = confusion_matrix(y_true_arr, y_pred_argmax_arr, labels=[0, 1])
 
   # Score distribution diagnostics
   prob_min = float(np.min(y_prob_arr))
@@ -384,9 +388,6 @@ def evaluate_mil(
   margin_mean = float(np.mean(margins_arr)) if margins_arr.size else None
   margin_max = float(np.max(margins_arr)) if margins_arr.size else None
 
-  # Threshold tuning
-  best_thr, f1_at_best_thr = _find_best_threshold(y_true, y_prob)
-
   # F1 at fixed threshold 0.5
   preds_at_05 = (y_prob_arr >= 0.5).astype(int)
   f1_at_05 = float(f1_score(y_true, preds_at_05, average="macro", zero_division=0))
@@ -394,9 +395,12 @@ def evaluate_mil(
   return {
     "acc": float(acc),
     "macro_f1": float(macro_f1),
+    "acc_argmax": acc_argmax,
+    "macro_f1_argmax": macro_f1_argmax,
     "auc": auc,
     "pr_auc": pr_auc,
     "cm": cm,
+    "cm_argmax": cm_argmax,
     "true_counts": true_counts,
     "pred_counts": pred_counts,
     "pred_pos_rate": pred_pos_rate,
@@ -482,6 +486,7 @@ def fit_mil(
   best_score: float = -math.inf if es_mode == "max" else math.inf
   best_score_str: str = "None"
   best_epoch: int = -1  # 1-based when reported
+  best_val_threshold: Optional[float] = None
 
   asynchrony: bool = cfg.dataset.data.pin_memory
   skipped_train_slides: set[str] = set()
@@ -698,9 +703,18 @@ def fit_mil(
     # Val metrics
     # -------------------------
     metrics = evaluate_mil(cfg, rr, model, val_loader, skipped_slides=skipped_eval_slides)
+    val_best_thr = float(metrics.get("best_thr", 0.5))
     auc = metrics.get("auc", None)
     val_auc = float(auc) if isinstance(auc, (float, int)) else -math.inf
     auc_str = f"{val_auc:.4f}" if math.isfinite(val_auc) else "None"
+
+    # Train macro-F1 computed using the (val) best threshold for this epoch.
+    if train_y_true:
+      train_prob_arr = np.array(train_y_prob, dtype=np.float32)
+      train_pred_at_val_best = (train_prob_arr >= val_best_thr).astype(int)
+      train_macro_f1 = float(f1_score(train_y_true, train_pred_at_val_best, average="macro", zero_division=0))
+    else:
+      train_macro_f1 = 0.0
 
     # -------------------------
     # Checkpointing: follow early-stopping metric
@@ -727,6 +741,7 @@ def fit_mil(
       best_score = current_score
       best_score_str = current_score_str
       best_epoch = epoch + 1  # 1-based
+      best_val_threshold = val_best_thr
       if cfg.core.export.save_best_weights:
         torch.save(model.state_dict(), best_path)
 
@@ -753,7 +768,7 @@ def fit_mil(
       f"Epoch {epoch+1}/{epochs} | "
       f"val_loss={val_loss:.4f} | "
       f"val_acc={metrics['acc']:.4f} | val_macro_f1={metrics['macro_f1']:.4f} | "
-      f"val_auc={auc_str} | val_pr_auc={val_pr_auc_str}"
+      f"val_auc={auc_str} | val_pr_auc={val_pr_auc_str} | val_best_thr={val_best_thr:.3f}"
     )
     # Log cache statistics
     total_cache_ops = cache_hits + cache_misses
@@ -801,6 +816,7 @@ def fit_mil(
     "best_metric": str(es_metric),
     "best_score": None if (best_epoch < 0 or not math.isfinite(best_score)) else float(best_score),
     "best_weights_path": str(best_path) if best_path.exists() else None,
+    "best_val_threshold": best_val_threshold,
   }
   try:
     with open(run_dir / "best_summary.json", "w") as f:
