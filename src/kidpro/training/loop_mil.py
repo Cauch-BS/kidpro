@@ -470,7 +470,7 @@ def fit_mil(
 
   # Early stopping with configurable metric
   es_metric = cfg.train.early_stopping.metric
-  es_mode = "max" if es_metric in ("val_auc", "val_pr_auc", "val_macro_f1") else "min"
+  es_mode = "max" if es_metric in ("val_auc", "val_pr_auc", "val_macro_f1", "val_score") else "min"
   stopper = EarlyStopping(
     patience=cfg.train.early_stopping.patience,
     min_delta=cfg.train.early_stopping.min_delta,
@@ -708,6 +708,17 @@ def fit_mil(
     val_auc = float(auc) if isinstance(auc, (float, int)) else -math.inf
     auc_str = f"{val_auc:.4f}" if math.isfinite(val_auc) else "None"
 
+    # Composite score used by leaderboard/selection logic (if enabled):
+    # score = 0.4 * val_auc + 0.6 * val_macro_f1
+    val_macro_f1 = float(metrics["macro_f1"])
+    val_score: float
+    if math.isfinite(val_auc):
+      val_score = 0.4 * val_auc + 0.6 * val_macro_f1
+    else:
+      # If AUC is undefined (e.g., only one class present), fall back to macro-F1 component.
+      val_score = 0.6 * val_macro_f1
+    val_score_str = f"{val_score:.4f}" if math.isfinite(val_score) else "None"
+
     # Train macro-F1 computed using the (val) best threshold for this epoch.
     if train_y_true:
       train_prob_arr = np.array(train_y_prob, dtype=np.float32)
@@ -730,8 +741,11 @@ def fit_mil(
       current_score = pr_auc_num
       current_score_str = f"{pr_auc_num:.4f}" if math.isfinite(pr_auc_num) else "None"
     elif es_metric == "val_macro_f1":
-      current_score = float(metrics["macro_f1"])
+      current_score = val_macro_f1
       current_score_str = f"{current_score:.4f}"
+    elif es_metric == "val_score":
+      current_score = val_score
+      current_score_str = val_score_str
     else:  # val_loss
       current_score = val_loss
       current_score_str = f"{val_loss:.4f}"
@@ -768,7 +782,7 @@ def fit_mil(
       f"Epoch {epoch+1}/{epochs} | "
       f"val_loss={val_loss:.4f} | "
       f"val_acc={metrics['acc']:.4f} | val_macro_f1={metrics['macro_f1']:.4f} | "
-      f"val_auc={auc_str} | val_pr_auc={val_pr_auc_str} | val_best_thr={val_best_thr:.3f}"
+      f"val_auc={auc_str} | val_pr_auc={val_pr_auc_str} | val_score={val_score_str} | val_best_thr={val_best_thr:.3f}"
     )
     # Log cache statistics
     total_cache_ops = cache_hits + cache_misses
@@ -798,6 +812,8 @@ def fit_mil(
       stopper.step(pr_auc_num)
     elif es_metric == "val_macro_f1":
       stopper.step(metrics["macro_f1"])
+    elif es_metric == "val_score":
+      stopper.step(val_score)
     else:  # val_loss
       stopper.step(val_loss)
 

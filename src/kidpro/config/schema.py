@@ -279,7 +279,7 @@ class EarlyStoppingCfg(BaseModel):
   patience: int = 5
   min_delta: float = 1e-5
   mode: Literal["min", "max"] = "min"
-  metric: Literal["val_loss", "val_auc", "val_pr_auc", "val_macro_f1"] = "val_auc"
+  metric: Literal["val_loss", "val_auc", "val_pr_auc", "val_macro_f1", "val_score"] = "val_auc"
 
   @model_validator(mode="after")
   def _validate(self) -> "EarlyStoppingCfg":
