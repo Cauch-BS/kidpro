@@ -6,7 +6,7 @@ KidPro uses Hydra for configuration. The main configs live under `kidpro/conf/` 
 
 - `kidpro/conf/config.yaml`: tile segmentation training
 - `kidpro/conf/config_wsi.yaml`: WSI MIL training
-- `kidpro/conf/infer_wsi.yaml`: inference
+- `kidpro/conf/infer_ensem.yaml`: inference
 - `kidpro/conf/preprocess.yaml`: MIL preprocessing
 - `kidpro/conf/patch/*.yaml`: patch generation
 - `kidpro/conf/dataset/*.yaml`: dataset presets
@@ -33,8 +33,8 @@ defaults:
 python -m kidpro.train_tile dataset=glom
 python -m kidpro.train_tile model=virchow2 train.batch_size=8
 python -m kidpro.train_wsi dataset.paths.label_csv=/path/to/labels.csv
-python -m kidpro.infer_wsi inference.wsi_path=/path/to/slide.svs
-python -m kidpro.infer_wsi inference.cache_dir=/path/to/wsidata_cache
+python -m kidpro.infer_ensem infer_ensem.csv_path=/path/to/labels.csv
+python -m kidpro.infer_ensem infer_ensem.cache_dir=/path/to/wsidata_cache infer_ensem.ensure_cache=true
 python -m kidpro.preprocessing preprocess.export_patches=false
 ```
 

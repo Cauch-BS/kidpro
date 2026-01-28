@@ -89,17 +89,15 @@ locally before running inference.
 
 ## WSI Inference
 
-Run WSI inference with the default config (`kidpro/conf/infer_wsi.yaml`):
+Run WSI inference with the default config (`kidpro/conf/infer_ensem.yaml`):
 
-- `python -m kidpro.infer_wsi inference.wsi_path=/path/to/slide.svs`
+- `python -m kidpro.infer_ensem infer_ensem.csv_path=/path/to/labels.csv`
 
 Common overrides:
 
-- `python -m kidpro.infer_wsi inference.output_dir=/path/to/output`
-- `python -m kidpro.infer_wsi inference.cache_dir=/path/to/wsidata_cache`
-- `python -m kidpro.infer_wsi inference.patch_dir=/path/to/tiles`
-- `python -m kidpro.infer_wsi inference.preprocess.level=1`
-- `python -m kidpro.infer_wsi mlflow.tracking_uri=http://localhost:5000`
+- `python -m kidpro.infer_ensem infer_ensem.output_dir=/path/to/output`
+- `python -m kidpro.infer_ensem infer_ensem.cache_dir=/path/to/wsidata_cache infer_ensem.ensure_cache=true`
+- `python -m kidpro.infer_ensem mlflow.tracking_uri=http://localhost:5000`
 
 Outputs:
 

@@ -11,8 +11,9 @@ from torch.nn import Module
 from torch.optim import Optimizer
 
 from ..config.schema import AppCfg, SegTaskCfg
+from ..utils.model_io import freeze_module
 from .lora import apply_lora
-from .sources import build_foundation, freeze_module
+from .sources import build_foundation
 
 
 class SimpleUpsampleDecoder(nn.Module):

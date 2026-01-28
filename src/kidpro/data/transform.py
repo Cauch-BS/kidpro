@@ -48,14 +48,17 @@ def get_transforms(cfg: AppCfg) -> tuple[A.Compose, A.Compose]:
       log.info("[TRANSFORMS] Using ImageNet normalization for model.name=%s", cfg.model.name)
 
     # If tile-encoder embeddings are cached, MIL training must see deterministic tiles;
-    # otherwise the cached embeddings correspond to one random augmentation sample.
+    # otherwise the cached embeddings would correspond to one random augmentation sample.
     is_mil = getattr(task, "type", None) == "mil"
     mil_cache = getattr(getattr(cfg.dataset, "data", None), "mil_cache", None)
     emb_cache_enabled = bool(
       is_mil
       and mil_cache is not None
       and getattr(mil_cache, "enabled", False)
-      and getattr(mil_cache, "cache_pooled_embeddings", False)
+      and (
+        getattr(mil_cache, "cache_tile_embeddings", False)
+        or getattr(mil_cache, "cache_pooled_embeddings", False)  # backwards compat
+      )
     )
     flip_p = 0.0 if emb_cache_enabled else 0.5
     if is_mil and emb_cache_enabled:

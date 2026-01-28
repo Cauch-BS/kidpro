@@ -360,8 +360,8 @@ def _resolve_longnet_weights_path(cfg: "AppCfg") -> Path:
 
 def build(cfg: "AppCfg") -> SlideEncoderBackbone:
     """Build a _LongNetViT slide encoder from config."""
+    from ...utils.model_io import load_state_dict_generic
     from ..lora import apply_lora
-    from ..sources import load_state_dict_generic
 
     in_chans = int(getattr(cfg.model, "foundation_dim", 1536))
     dim = cfg.model.longnet_dim

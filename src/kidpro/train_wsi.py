@@ -17,9 +17,9 @@ from .data.dataset_mil import MILDataset
 from .data.split_mil import build_mil_split_csv
 from .data.transform import get_transforms
 from .modeling.factory_wsi import build_model_mil
-from .modeling.sources import load_state_dict_generic
 from .training.loop_mil import fit_mil
 from .training.rankmix import RankMixSampler, TileScorer
+from .utils.model_io import load_state_dict_generic
 
 log = logging.getLogger(__name__)
 

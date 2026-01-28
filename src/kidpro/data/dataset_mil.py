@@ -49,9 +49,6 @@ class TileStream:
     self._dataset = dataset
     self.slide_name = slide_name
 
-  def iter_tiles(self) -> Iterable[tuple[torch.Tensor, torch.Tensor]]:
-    return self._dataset._iter_tile_tensors(self.slide_name)
-
   def iter_batches(self, batch_size: int) -> Iterable[tuple[torch.Tensor, torch.Tensor]]:
     batch_imgs: list[torch.Tensor] = []
     batch_coords: list[torch.Tensor] = []
@@ -115,8 +112,8 @@ class MILDataset(Dataset):
       return
     self._tile_encoder_hash = hash_str
 
-  def _pooled_emb_enabled(self) -> bool:
-    return bool(self.cache_cfg.enabled and self.cache_cfg.cache_pooled_embeddings)
+  def _tile_emb_cache_enabled(self) -> bool:
+    return bool(self.cache_cfg.enabled and self.cache_cfg.cache_tile_embeddings)
 
   def __len__(self) -> int:
     return len(self.df)
@@ -246,13 +243,13 @@ class MILDataset(Dataset):
     if self._tile_encoder_hash is not None:
       group.attrs["tile_emb_model_hash"] = self._tile_encoder_hash
 
-    # Remove old format markers if present
+    # Remove legacy marker if present (older cache format).
     if "pooled_emb_complete" in group.attrs:
       del group.attrs["pooled_emb_complete"]
 
   def _get_cached_tile_embeddings(self, slide_name: str) -> Optional[tuple[np.ndarray, np.ndarray]]:
     """Get cached tile embeddings and coords for a slide."""
-    if not self._pooled_emb_enabled():
+    if not self._tile_emb_cache_enabled():
       return None
     # Use separate embedding cache path (not shared with tile image cache)
     cache_path = self._emb_cache_path(slide_name)
@@ -270,7 +267,7 @@ class MILDataset(Dataset):
 
   def _set_cached_tile_embeddings(self, slide_name: str, embeddings: np.ndarray, coords: np.ndarray) -> None:
     """Cache tile embeddings and coords for a slide."""
-    if not self._pooled_emb_enabled():
+    if not self._tile_emb_cache_enabled():
       return
     worker_info = get_worker_info()
     if worker_info is not None:
@@ -381,7 +378,7 @@ class MILDataset(Dataset):
       return cast(torch.Tensor, img)
     return torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0
 
-  def _stack_tiles(self, imgs: list[torch.Tensor]) -> torch.Tensor:
+  def _stack_tiles(self, imgs: list[torch.Tensor | np.ndarray]) -> torch.Tensor:
     return torch.stack(
       [img if isinstance(img, torch.Tensor) else torch.from_numpy(img) for img in imgs],
       dim=0,

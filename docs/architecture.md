@@ -23,7 +23,7 @@ flowchart TD
   WSI --> Inference[WSI_Inference]
   WSIDataCache --> Inference
   WSIModel --> Inference
-  Inference --> Prediction[Prediction_JSON]
+  Inference --> Prediction[Submission_CSV + metrics.json]
 ```
 
 Key components:
@@ -32,6 +32,6 @@ Key components:
 - `kidpro.preprocessing`: creates wsidata cache and optional patches from WSIs.
 - `kidpro.train_tile`: trains segmentation on patches.
 - `kidpro.train_wsi`: trains WSI MIL classifier on wsidata tiles.
-- `kidpro.infer_wsi`: builds/reuses wsidata cache and runs classification.
+- `kidpro.infer_ensem`: runs WSI inference from a CSV (optional checkpoint ensembling).
 
 See also: [overview.md](overview.md), [training.md](training.md), [inference.md](inference.md), [data.md](data.md).

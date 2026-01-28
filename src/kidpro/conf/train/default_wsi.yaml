@@ -21,7 +21,6 @@ rankmix:
   stage1_checkpoint: null  # Path to Stage 1 best_model.pt (required when enabled=true)
 
 # Optimizer settings
-dropout: 0.25
 weight_decay: 0.05
 head_lr_multiplier: 3.0
 

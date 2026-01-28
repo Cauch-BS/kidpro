@@ -5,8 +5,9 @@ import logging
 from torch.nn import Module
 
 from ..config.schema import AppCfg
+from ..utils.model_io import freeze_module
 from .lora import apply_lora
-from .sources import build_foundation, freeze_module
+from .sources import build_foundation
 
 log = logging.getLogger(__name__)
 

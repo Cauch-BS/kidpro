@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Literal, Optional, Union, cast
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 # -------------------------
 # Core enums / literals
@@ -50,7 +50,6 @@ class SegTaskCfg(BaseModel):
 class MILTaskCfg(BaseModel):
     type: Literal["mil"]
     num_classes: int = 2
-    top_k: int = 10
 
     @model_validator(mode="after")
     def _validate(self) -> "MILTaskCfg":
@@ -134,7 +133,6 @@ class ModelCfg(BaseModel):
   # Unet-specific
   encoder_name: str = "resnet50"
   encoder_weights: Optional[str] = "imagenet"
-  activation: Optional[str] = None
 
   # timm-specific (also used as a generic "arch" string for other backbones)
   arch: Optional[str] = None
@@ -196,16 +194,19 @@ class ModelCfg(BaseModel):
 # -------------------------
 class MILCacheCfg(BaseModel):
   enabled: bool = False
-  cache_subdir: str = "mil_tiles_cache"
   chunk_size: int = 64
-  compression: Literal["none", "blosc"] = "none"
   memory_max_slides: int = 0
-  cache_pooled_embeddings: bool = False
+  # Cache tile-level embeddings (and their coordinates) produced by the tile encoder.
+  #
+  # NOTE: This option was previously named `cache_pooled_embeddings` (misleading).
+  # We keep a validation alias for backwards-compatible config loading.
+  cache_tile_embeddings: bool = Field(
+    default=False,
+    validation_alias=AliasChoices("cache_tile_embeddings", "cache_pooled_embeddings"),
+  )
 
   @model_validator(mode="after")
   def _validate(self) -> "MILCacheCfg":
-    if not self.cache_subdir:
-      raise ValueError("data.mil_cache.cache_subdir must be non-empty.")
     if self.chunk_size <= 0:
       raise ValueError("data.mil_cache.chunk_size must be > 0.")
     if self.memory_max_slides < 0:
@@ -257,10 +258,6 @@ class PreprocessPathsCfg(BaseModel):
 
 class PreprocessCfg(BaseModel):
   level: int = 0
-  margin: int = 0
-  occupancy_threshold: float = 0.1
-  foreground_threshold: Optional[float] = None
-  hsv_s_threshold: Optional[float] = 0.05
   overwrite: bool = False
   tiles_key: str = "tiles"
 
@@ -268,12 +265,6 @@ class PreprocessCfg(BaseModel):
   def _validate(self) -> "PreprocessCfg":
     if self.level < 0:
       raise ValueError("preprocess.level must be >= 0.")
-    if self.margin < 0:
-      raise ValueError("preprocess.margin must be >= 0.")
-    if not (0.0 <= self.occupancy_threshold <= 1.0):
-      raise ValueError("preprocess.occupancy_threshold must be in [0, 1].")
-    if self.hsv_s_threshold is not None and not (0.0 <= self.hsv_s_threshold <= 1.0):
-      raise ValueError("preprocess.hsv_s_threshold must be in [0, 1] or None.")
     if not self.tiles_key:
       raise ValueError("preprocess.tiles_key must be non-empty.")
     return self
@@ -400,20 +391,6 @@ class ExportCfg(BaseModel):
   best_weights_name: str = "best_model.pt"
 
 
-class InferenceCfg(BaseModel):
-  wsi_path: Path
-  slide_id: Optional[str] = None
-  cache_dir: Optional[Path] = None
-  patch_dir: Optional[Path] = None
-  output_dir: Optional[Path] = None
-  output_json: str = "prediction.json"
-  tile_size: Optional[int] = None
-  batch_size: int = Field(default=64, ge=1)
-  cleanup_tiles: bool = False
-  preprocess: PreprocessCfg = Field(default_factory=PreprocessCfg)
-  fallback_weights: Optional[Path] = None
-
-
 class MlflowCfg(BaseModel):
   enabled: bool = True
   registry_model_name: str
@@ -440,7 +417,6 @@ class AppCfg(BaseModel):
   train: TrainCfg
   core: CoreCfg
   mlflow: MlflowCfg
-  inference: Optional[InferenceCfg] = None
 
   # Hydra run dir is injected by CONFIG()
   run_dir: Optional[Path] = None

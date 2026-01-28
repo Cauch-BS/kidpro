@@ -7,12 +7,8 @@ import torch
 import torch.nn as nn
 
 from ...config.schema import AppCfg
-from . import (
-    FoundationBackbone,
-    infer_feat_dim,
-    load_state_dict_generic,
-    resolve_weights_path,
-)
+from ...utils.model_io import load_state_dict_generic, resolve_weights_path
+from . import FoundationBackbone, infer_feat_dim
 
 FOUNDATION_NAME = "prov_gigapath"
 

@@ -5,7 +5,7 @@ Scope: **WSI/MIL (slide-level)** training + inference.
 Primary entrypoints:
 
 - Training: `src/kidpro/train_wsi.py`
-- Inference: `src/kidpro/infer_wsi.py`
+- Inference: `src/kidpro/infer_ensem.py`
 
 Key config bundles:
 
@@ -113,6 +113,6 @@ Key config bundles:
   - `train.use_balanced_sampling: true`, `train.use_class_weights: false` (simple and stable)
   - OR `train.use_balanced_sampling: false`, `train.use_class_weights: true` (keeps empirical distribution)
 - **Transforms**: for Prov-GigaPath/timm backbones, use ImageNet mean/std normalization; keep 256→224 resize/crop behavior.
-- **Embedding cache**: if `dataset.data.mil_cache.cache_pooled_embeddings: true`, avoid stochastic flips (deterministic transforms).
+- **Embedding cache**: if `dataset.data.mil_cache.cache_tile_embeddings: true`, avoid stochastic flips (deterministic transforms).
 - **Selection metric**: checkpoint “best” using the same metric as early stopping.
 - **LoRA**: in MIL, apply LoRA to the **slide encoder**; keep the tile encoder frozen.

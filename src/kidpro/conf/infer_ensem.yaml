@@ -7,7 +7,7 @@ defaults:
   - core: default
   - _self_
 
-# CSV inference + optional checkpoint ensembling.
+# CSV inference using cached MIL embeddings.
 infer_ensem:
   # --- Input / output ---
   csv_path: /home/khdp-user/workspace/dataset/CSV/GT_label.csv
@@ -22,26 +22,13 @@ infer_ensem:
   split_col: split
   test_value: test
 
-  # If your CSV has a slide image path column, set it here (e.g. "image" or "image_path").
-  # If null, slides are resolved from dataset.paths.wsi_dir + dataset.paths.wsi_ext.
-  wsi_path_col: null
-
-  # --- WSI / tile settings ---
-  tile_size: null          # defaults to dataset.data.patch_size
-  level: 0
-  tiles_key: tiles
-  ensure_cache: false      # if true, create wsidata caches when missing
-  cache_dir: null          # override cache dir for wsidata .zarr (otherwise dataset.paths.wsi_cache_dir)
-  overwrite_cache: false
-
   # --- Inference settings ---
-  batch_size: 64
   threshold: 0.5
   amp: auto                # auto|true|false
+  require_cached_embeddings: true
 
-  # --- Weights / ensembling ---
-  # If weights_paths is empty:
+  # --- Weights ---
+  # If weights_path is null:
   # - if mlflow.enabled=true, uses the best model from registry
   # - else falls back to models/best_model.pt (repo-relative)
-  weights_paths: []
-  share_tile_encoder: true # if true, encode tiles once and reuse for all ensemble members
+  weights_path: null

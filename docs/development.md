@@ -17,7 +17,7 @@ python -m kidpro.patch
 python -m kidpro.preprocessing
 python -m kidpro.train_tile
 python -m kidpro.train_wsi
-python -m kidpro.infer_wsi
+python -m kidpro.infer_ensem
 ```
 
 ## Linting and Type Checks

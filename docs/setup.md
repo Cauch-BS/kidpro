@@ -29,7 +29,7 @@ pip install -e .
 
 WSI inference falls back to local weights if MLflow resolution fails or is disabled. Place the checkpoint at `models/best_model.pt`. One is provided in the repository, and you can replace it with your own model.
 
-You can also override this with `inference.fallback_weights`.
+You can also override this with `infer_ensem.fallback_weights`.
 
 ## Sanity Check
 
@@ -38,7 +38,7 @@ Confirm entry points are reachable:
 ```bash
 python -m kidpro.train_tile --help
 python -m kidpro.train_wsi --help
-python -m kidpro.infer_wsi --help
+python -m kidpro.infer_ensem --help
 ```
 
 See also: [configuration.md](configuration.md), [data.md](data.md), [overview.md](overview.md).
