@@ -208,6 +208,42 @@ def _get_tile_embeddings_from_stream(
   return feats_all, coords_all
 
 
+def _best_threshold_macro_f1(
+  y_true: Sequence[int],
+  y_score: Sequence[float],
+  *,
+  n_steps: int = 1001,
+) -> tuple[float, float]:
+  """
+  Find threshold in [0,1] maximizing macro-F1 for binary classification.
+
+  Returns: (best_threshold, best_macro_f1)
+  """
+  if not y_true or not y_score:
+    return 0.5, float("nan")
+
+  # If only one class present, threshold search isn't meaningful.
+  if len(set(y_true)) < 2:
+    return 0.5, float("nan")
+
+  scores = np.asarray(list(y_score), dtype=np.float64)
+  ys = list(map(int, y_true))
+
+  thresholds = np.linspace(0.0, 1.0, int(n_steps))
+
+  best_thr = 0.5
+  best_f1 = -1.0
+
+  for t in thresholds:
+    y_pred_t = (scores >= t).astype(np.int64).tolist()
+    f1 = _macro_f1(ys, y_pred_t)
+    if f1 > best_f1:
+      best_f1 = f1
+      best_thr = float(t)
+
+  return best_thr, float(best_f1)
+
+
 def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str, Any]) -> Dict[str, Any]:
   csv_path = _resolve_path(str(infer["csv_path"]))
   df = pd.read_csv(csv_path)
@@ -234,7 +270,8 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
   output_csv = output_dir / str(infer.get("output_csv", "submission.csv"))
 
   threshold = float(infer.get("threshold", 0.5))
-  require_cached = bool(infer.get("require_cached_embeddings", True))
+  require_cached = bool(infer.get("require_cached_embeddings", False))
+  use_best_threshold = bool(infer.get("use_best_threshold", False))
 
   if not (cfg.dataset.data.mil_cache.enabled and cfg.dataset.data.mil_cache.cache_tile_embeddings):
     raise RuntimeError(
@@ -415,14 +452,34 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
 
   # Metrics on rows with GT
   if y_true:
+    # This is macro-F1 at the *configured* threshold (default 0.5)
     macro_f1 = _macro_f1(y_true, y_pred)
     roc_auc = _roc_auc_binary(y_true, y_score)
+
+    # Best threshold by macro-F1
+    n_steps = int(infer.get("threshold_search_steps", 1001))
+    best_threshold, macro_f1_best = _best_threshold_macro_f1(y_true, y_score, n_steps=n_steps)
+
+    if use_best_threshold:
+      # Re-assign labels using best threshold
+      for r in out_rows:
+        prob = r.get("Predicted_Prob")
+        if prob is not None:
+          r["Predicted_Label"] = int(prob >= best_threshold)
+
   else:
     macro_f1 = float("nan")
     roc_auc = float("nan")
+    best_threshold = float("nan")
+    macro_f1_best = float("nan")
 
-  print(f"macro_f1: {macro_f1}" if macro_f1 == macro_f1 else "macro_f1: n/a")
+  print(f"macro_f1@{threshold}: {macro_f1}" if macro_f1 == macro_f1 else f"macro_f1@{threshold}: n/a")
   print(f"ROC_AUC: {roc_auc}" if roc_auc == roc_auc else "ROC_AUC: n/a")
+  print(
+    f"best_threshold: {best_threshold}  macro_f1@best_threshold: {macro_f1_best}"
+    if (best_threshold == best_threshold and macro_f1_best == macro_f1_best)
+    else "best_threshold: n/a  macro_f1@best_threshold: n/a"
+  )
 
   # Output CSV for test rows (split_col == test_value). If split_col missing, export all.
   out_df = pd.DataFrame(out_rows)
@@ -439,6 +496,8 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
     "num_scored": int(len(y_true)),
     "macro_f1": macro_f1,
     "roc_auc": roc_auc,
+    "best_threshold": best_threshold,
+    "macro_f1_best": macro_f1_best,
     "weights_path": str(weights_path),
     "require_cached_embeddings": require_cached,
     "processed": processed,

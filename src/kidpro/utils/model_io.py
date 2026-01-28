@@ -14,35 +14,19 @@ from ..config.schema import AppCfg
 
 log = logging.getLogger(__name__)
 
-# --- Checkpoint diagnostics -------------------------------------------------
-
-def _top_level_prefixes(keys: Sequence[str], *, limit: int = 24) -> list[str]:
-  """
-  Return a short list of "top-level" key prefixes for debugging, e.g.:
-    slide_encoder, classifier, tile_encoder, backbone, model, base_model, ...
-  """
-  prefixes: set[str] = set()
-  for k in keys:
-    if not k:
-      continue
-    prefixes.add(k.split(".", 1)[0])
-  out = sorted(prefixes)
-  if len(out) > limit:
-    return out[:limit] + ["..."]
-  return out
+# -----------------------------------------------------------------------------
+# Public helpers
+# -----------------------------------------------------------------------------
 
 
-def _raise_empty_prefix_filter(*, ckpt_path: Path, ckpt_prefix: str, keys: Sequence[str]) -> None:
-  tops = _top_level_prefixes(keys)
-  sample = sorted(keys)[:8]
-  raise RuntimeError(
-    "Checkpoint prefix filter matched 0 keys. "
-    f"ckpt_path={ckpt_path} ckpt_prefix={ckpt_prefix!r}. "
-    f"Top-level prefixes seen: {tops}. "
-    f"Sample keys: {sample}. "
-    "This usually means you pointed at the wrong checkpoint (or a checkpoint saved without module prefixes)."
-  )
+def freeze_module(module: nn.Module) -> None:
+  for p in module.parameters():
+    p.requires_grad = False
 
+
+# -----------------------------------------------------------------------------
+# Constants / key conventions
+# -----------------------------------------------------------------------------
 
 # Task-specific heads/decoders that should be ignored when loading a backbone/tile encoder checkpoint.
 _HEAD_PREFIXES: tuple[str, ...] = (
@@ -70,13 +54,45 @@ _STRIP_PREFIXES: tuple[str, ...] = (
 )
 
 
-def freeze_module(module: nn.Module) -> None:
-  for p in module.parameters():
-    p.requires_grad = False
+# -----------------------------------------------------------------------------
+# Diagnostics
+# -----------------------------------------------------------------------------
 
+def _top_level_prefixes(keys: Sequence[str], *, limit: int = 24) -> list[str]:
+  """Return short list of top-level prefixes for debugging."""
+  prefixes = sorted({k.split(".", 1)[0] for k in keys if k})
+  if len(prefixes) > limit:
+    return prefixes[:limit] + ["..."]
+  return prefixes
+
+
+def _raise_empty_prefix_filter(*, ckpt_path: Path, ckpt_prefix: str, keys: Sequence[str]) -> None:
+  raise RuntimeError(
+    "Checkpoint prefix filter matched 0 keys. "
+    f"ckpt_path={ckpt_path} ckpt_prefix={ckpt_prefix!r}. "
+    f"Top-level prefixes seen: {_top_level_prefixes(keys)}. "
+    f"Sample keys: {sorted(keys)[:8]}. "
+    "This usually means you pointed at the wrong checkpoint (or a checkpoint saved without module prefixes)."
+  )
+
+
+# -----------------------------------------------------------------------------
+# Checkpoint reading + normalization
+# -----------------------------------------------------------------------------
 
 def _drop_head_keys(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
   return {k: v for k, v in state.items() if not k.startswith(_HEAD_PREFIXES)}
+
+
+def _model_keys(model: nn.Module) -> set[str] | None:
+  try:
+    return set(model.state_dict().keys())
+  except Exception:
+    return None
+
+
+def _count_matches(keys: Sequence[str], model_keys: set[str]) -> int:
+  return sum(1 for k in keys if k in model_keys)
 
 
 def _as_state_dict(obj: object) -> dict[str, torch.Tensor]:
@@ -179,6 +195,10 @@ def _apply_ckpt_prefix(
   return _strip_prefix(filtered, ckpt_prefix)
 
 
+# -----------------------------------------------------------------------------
+# Key remapping helpers
+# -----------------------------------------------------------------------------
+
 def _replace_base_layer(
   state: Mapping[str, torch.Tensor],
   model: nn.Module | None = None,
@@ -199,9 +219,8 @@ def _replace_base_layer(
   if model is None:
     return {k.replace(".base_layer.", "."): v for k, v in state.items()}
 
-  try:
-    model_keys = set(model.state_dict().keys())
-  except Exception:
+  model_keys = _model_keys(model)
+  if model_keys is None:
     # If we can't inspect the model keys, preserve legacy behavior.
     return {k.replace(".base_layer.", "."): v for k, v in state.items()}
 
@@ -284,17 +303,13 @@ def _remap_encoder_variant(
   if not state:
     return state
 
-  try:
-    model_keys = set(model.state_dict().keys())
-  except Exception:
+  model_keys = _model_keys(model)
+  if model_keys is None:
     # Some wrappers may not expose state_dict reliably; don't remap in that case.
     return state
 
   if not model_keys:
     return state
-
-  def _baseline_matches(keys: list[str]) -> int:
-    return sum(1 for k in keys if k in model_keys)
 
   rules: list[tuple[str, str]] = [
     ("base_model.model.", "base_model.model.encoder."),
@@ -317,9 +332,9 @@ def _remap_encoder_variant(
     return out
 
   keys = list(state.keys())
-  base = _baseline_matches(keys)
-  add = _baseline_matches([_add_encoder(k) for k in keys])
-  drop = _baseline_matches([_drop_encoder(k) for k in keys])
+  base = _count_matches(keys, model_keys)
+  add = _count_matches([_add_encoder(k) for k in keys], model_keys)
+  drop = _count_matches([_drop_encoder(k) for k in keys], model_keys)
 
   best_name = "identity"
   best_fn = lambda k: k
@@ -374,15 +389,11 @@ def _remap_wrapper_prefix(
   if not state:
     return state
 
-  try:
-    model_keys = set(model.state_dict().keys())
-  except Exception:
+  model_keys = _model_keys(model)
+  if model_keys is None:
     return state
   if not model_keys:
     return state
-
-  def _baseline_matches(keys: Sequence[str]) -> int:
-    return sum(1 for k in keys if k in model_keys)
 
   def _strip_wrappers(k: str) -> str:
     out = k
@@ -395,19 +406,21 @@ def _remap_wrapper_prefix(
           break
       if not matched:
         break
-    return out.replace(".base_layer.", ".")
+    # NOTE: do NOT normalize `.base_layer.` here; that is handled later by
+    # `_replace_base_layer(..., model=...)` so we can map in either direction.
+    return out
 
   def _add_prefix(prefix: str, k: str) -> str:
     return k if k.startswith(prefix) else (prefix + k)
 
   keys = list(state.keys())
-  base = _baseline_matches(keys)
-  strip_score = _baseline_matches([_strip_wrappers(k) for k in keys])
+  base = _count_matches(keys, model_keys)
+  strip_score = _count_matches([_strip_wrappers(k) for k in keys], model_keys)
 
   add_prefixes = ("base_model.model.", "model.", "backbone.", "tile_encoder.", "slide_encoder.", "classifier.")
   add_scores: dict[str, int] = {}
   for p in add_prefixes:
-    add_scores[p] = _baseline_matches([_add_prefix(p, k) for k in keys])
+    add_scores[p] = _count_matches([_add_prefix(p, k) for k in keys], model_keys)
 
   best_name = "identity"
   best_score = base
@@ -422,7 +435,7 @@ def _remap_wrapper_prefix(
     if sc > best_score:
       best_name = f"add_prefix:{p}"
       best_score = sc
-      best_fn = lambda k, p=p: _add_prefix(p, k) # type: ignore
+      best_fn = lambda k, p=p: _add_prefix(p, k) # type: ignore[misc]
 
   improve = best_score - base
   if best_name == "identity" or (improve < 32 and improve < int(0.05 * max(1, base))):
@@ -446,6 +459,10 @@ def _remap_wrapper_prefix(
   log.info("[FND CKPT] wrapper_remap=%s matched=%d->%d", best_name, base, best_score)
   return remapped
 
+
+# -----------------------------------------------------------------------------
+# Public loading APIs
+# -----------------------------------------------------------------------------
 
 def load_state_dict_with_remap(
   model: nn.Module,
@@ -562,10 +579,13 @@ def load_state_dict_generic(
 
   stripped: dict[str, torch.Tensor] = {}
   collisions: list[tuple[str, str]] = []
-  dropped_lora = 0
+  dropped_special = 0
 
   def _normalize_key(key: str) -> Optional[str]:
-    if "lora_" in key or "modules_to_save" in key:
+    # Keep LoRA keys in the non-PEFT path; the model may have adapters even if the
+    # checkpoint doesn't (they'll show up as "missing").
+    # Drop "modules_to_save" artifacts (rare; not part of standard state_dict).
+    if "modules_to_save" in key:
       return None
     out_k = key
     while True:
@@ -577,13 +597,12 @@ def load_state_dict_generic(
           break
       if not matched:
         break
-    out_k = out_k.replace(".base_layer.", ".")
     return out_k
 
   for k, v in filtered.items():
     out_k = _normalize_key(k)
     if out_k is None:
-      dropped_lora += 1
+      dropped_special += 1
       continue
     if out_k in stripped and stripped[out_k] is not v:
       collisions.append((out_k, k))
@@ -596,6 +615,10 @@ def load_state_dict_generic(
   # remap to best match the model before encoder-variant remap.
   stripped = _remap_wrapper_prefix(stripped, model)
 
+  # Normalize `.base_layer.` drift *against the actual model keys* (can add or drop
+  # `.base_layer.` depending on what the module exposes).
+  stripped = _replace_base_layer(stripped, model=model)
+
   # Same `.encoder.` drift can occur for non-PEFT backbones too (e.g. wrapper refactors).
   stripped = _remap_encoder_variant(stripped, model)
 
@@ -607,7 +630,7 @@ def load_state_dict_generic(
     )
 
   missing, unexpected = model.load_state_dict(stripped, strict=False)
-  msg = _format_ckpt_msg(missing=missing, unexpected=unexpected, dropped_lora=dropped_lora, peft_merge=False)
+  msg = _format_ckpt_msg(missing=missing, unexpected=unexpected, dropped_lora=dropped_special, peft_merge=False)
   log.info(msg)
   return model
 
