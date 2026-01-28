@@ -270,8 +270,8 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
       raise TypeError("MIL model missing tile_encoder; cannot load infer_ensem.tile_encoder_weights_path.")
     tile_weights_resolved = _resolve_path(tile_weights_path)
     log.info("[infer_ensem] loading tile_encoder weights from %s", str(tile_weights_resolved))
-    model.tile_encoder = load_state_dict_generic(  # type: ignore[attr-defined]
-      model.tile_encoder,  # type: ignore[attr-defined]
+    model.tile_encoder = load_state_dict_generic( # type: ignore
+      model.tile_encoder,  # type: ignore
       tile_weights_resolved,
       drop_heads=True,
     )
@@ -279,11 +279,21 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
   # Load slide encoder + classifier weights from the WSI checkpoint.
   # IMPORTANT: do NOT overwrite tile encoder here.
   log.info("[infer_ensem] loading slide_encoder + classifier from %s", str(weights_path))
-  model = load_state_dict_generic(
-    model,
+  if not hasattr(model, "slide_encoder") or not hasattr(model, "classifier"):
+    raise TypeError("MIL model missing slide_encoder/classifier; cannot load WSI checkpoint.")
+
+  # Load into submodules so PEFT LoRA checkpoints can `merge_and_unload()`.
+  model.slide_encoder = load_state_dict_generic(  # type: ignore[attr-defined]
+    model.slide_encoder,  # type: ignore[attr-defined]
     weights_path,
     drop_heads=False,
-    include_prefixes=("slide_encoder.", "classifier."),
+    ckpt_prefix="slide_encoder.",
+  )
+  model.classifier = load_state_dict_generic(  # type: ignore[attr-defined]
+    model.classifier,  # type: ignore[attr-defined]
+    weights_path,
+    drop_heads=False,
+    ckpt_prefix="classifier.",
   )
 
   model = model.to(rr.device)

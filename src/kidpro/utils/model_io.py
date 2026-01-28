@@ -71,6 +71,8 @@ def load_state_dict_generic(
   *,
   drop_heads: bool = True,
   include_prefixes: tuple[str, ...] | None = None,
+  exclude_prefixes: tuple[str, ...] | None = None,
+  ckpt_prefix: str | None = None,
 ) -> nn.Module:
   ckpt_path = Path(ckpt_path)
   if not ckpt_path.exists():
@@ -103,23 +105,66 @@ def load_state_dict_generic(
     state = _as_state_dict(obj)
 
   state = _strip_module_prefix(state)
+  if ckpt_prefix:
+    state = {k: v for k, v in state.items() if k.startswith(ckpt_prefix)}
+    state = _strip_prefix(state, ckpt_prefix)
+  if exclude_prefixes:
+    state = {k: v for k, v in state.items() if not k.startswith(exclude_prefixes)}
   has_lora = _has_lora_keys(state)
+
+  def _format_ckpt_msg(
+    *,
+    missing: list[str],
+    unexpected: list[str],
+    dropped_lora: int = 0,
+    peft_merge: bool = False,
+  ) -> str:
+    # If caller restricted loading to specific prefixes, ignore unrelated missing keys
+    # to reduce noise (e.g. loading only slide_encoder.* + classifier.* into a MIL model).
+    missing_rel = (
+      [k for k in missing if k.startswith(include_prefixes)]  # type: ignore[arg-type]
+      if include_prefixes
+      else missing
+    )
+    base = "[FND CKPT] "
+    if peft_merge:
+      base += "peft_merge=1 "
+    else:
+      base += f"dropped_lora={dropped_lora} "
+    base += (
+      f"missing={len(missing_rel)} (showing up to 8): {missing_rel[:8]} "
+      f"unexpected={len(unexpected)} (showing up to 8): {unexpected[:8]}"
+    )
+    return base
 
   if has_lora and callable(getattr(model, "merge_and_unload", None)):
     # Some checkpoints store weights under a full model path; normalize.
     state = _strip_prefix(state, "backbone.tile_encoder.")
+    if ckpt_prefix:
+      state = {k: v for k, v in state.items() if k.startswith(ckpt_prefix)}
+      state = _strip_prefix(state, ckpt_prefix)
+    if exclude_prefixes:
+      state = {k: v for k, v in state.items() if not k.startswith(exclude_prefixes)}
+    if drop_heads:
+      # Drop task-specific heads/decoders for backbone-only loads (tile encoders).
+      head_prefixes = (
+        "fc.",
+        "classifier.",
+        "head.",
+        "last_linear.",
+        "decoder.",
+        "decode_head.",
+        "seg_head.",
+        "segmentation_head.",
+      )
+      state = {k: v for k, v in state.items() if not k.startswith(head_prefixes)}
     if include_prefixes:
       state = {k: v for k, v in state.items() if k.startswith(include_prefixes)}
     missing, unexpected = model.load_state_dict(state, strict=False)
     merged = model.merge_and_unload()  # type: ignore[operator]
     if merged is None:
       merged = model
-    msg = (
-      "[FND CKPT] peft_merge=1 "
-      f"missing={len(missing)} (showing up to 8): {missing[:8]} "
-      f"unexpected={len(unexpected)} (showing up to 8): {unexpected[:8]}"
-    )
-    print(msg)
+    msg = _format_ckpt_msg(missing=missing, unexpected=unexpected, peft_merge=True)
     log.info(msg)
     return cast(nn.Module, merged)
 
@@ -133,7 +178,18 @@ def load_state_dict_generic(
   # intentionally drop classifier heads when loading them. For full-model
   # checkpoints (e.g. WSI MIL), callers must set drop_heads=False.
   if drop_heads:
-    head_prefixes = ("fc.", "classifier.", "head.", "last_linear.")
+    head_prefixes = (
+      "fc.",
+      "classifier.",
+      "head.",
+      "last_linear.",
+      # Common decoder-style heads (e.g. segmentation) that we never want when
+      # loading a backbone/tile encoder checkpoint.
+      "decoder.",
+      "decode_head.",
+      "seg_head.",
+      "segmentation_head.",
+    )
     filtered = {k: v for k, v in state.items() if not k.startswith(head_prefixes)}
   else:
     filtered = dict(state)
@@ -188,13 +244,7 @@ def load_state_dict_generic(
     )
 
   missing, unexpected = model.load_state_dict(stripped, strict=False)
-  msg = (
-    "[FND CKPT] "
-    f"dropped_lora={dropped_lora} "
-    f"missing={len(missing)} (showing up to 8): {missing[:8]} "
-    f"unexpected={len(unexpected)} (showing up to 8): {unexpected[:8]}"
-  )
-  print(msg)
+  msg = _format_ckpt_msg(missing=missing, unexpected=unexpected, dropped_lora=dropped_lora, peft_merge=False)
   log.info(msg)
   return model
 
