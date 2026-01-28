@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, Optional, Tuple, cast
 
 import hydra
 import numpy as np
@@ -166,6 +166,16 @@ def _iter_tiles_from_cache(
     if hasattr(wsi, "close"):
       wsi.close()
 
+def _encode_tiles(model: Any, x: torch.Tensor) -> torch.Tensor:
+  if hasattr(model, "tile_encoder"):
+    encoder = getattr(model, "tile_encoder")
+    for kw in ("x", "pixel_values", "inputs_embeds"):
+      try:
+        return cast(torch.Tensor, encoder(**{kw: x}))
+      except TypeError:
+        continue
+    return cast(torch.Tensor, encoder(x))
+  return cast(torch.Tensor, model.encode_tiles(x))
 
 @torch.no_grad()
 def _encode_slide_from_cache(
@@ -207,9 +217,9 @@ def _encode_slide_from_cache(
 
     if use_amp:
       with torch.autocast(device_type="cuda"):
-        feats = model.encode_tiles(x)  # type: ignore[attr-defined, operator]
+        feats = _encode_tiles(model, x)  # type: ignore[attr-defined, operator]
     else:
-      feats = model.encode_tiles(x)  # type: ignore[attr-defined, operator]
+      feats = _encode_tiles(model, x)  # type: ignore[attr-defined, operator]
 
     # Keep embeddings on CPU to reduce GPU memory pressure.
     feats_chunks.append(feats.detach().to("cpu"))

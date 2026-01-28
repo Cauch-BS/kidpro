@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterator, Sequence, Tuple
+from typing import Any, Dict, Iterator, Sequence, Tuple, cast
 
 import hydra
 import pandas as pd
@@ -141,6 +141,16 @@ def _iter_tiles_from_cache(
     if hasattr(wsi, "close"):
       wsi.close()
 
+def _encode_tiles(model: Any, x: torch.Tensor) -> torch.Tensor:
+  if hasattr(model, "tile_encoder"):
+    encoder = getattr(model, "tile_encoder")
+    for kw in ("x", "pixel_values", "inputs_embeds"):
+      try:
+        return cast(torch.Tensor, encoder(**{kw: x}))
+      except TypeError:
+        continue
+    return cast(torch.Tensor, encoder(x))
+  return cast(torch.Tensor, model.encode_tiles(x))
 
 @torch.no_grad()
 def _extract_feats_coords(
@@ -171,9 +181,9 @@ def _extract_feats_coords(
     coords = torch.stack(batch_coords, dim=0).to(device, non_blocking=True)
     if use_amp:
       with torch.autocast(device_type="cuda"):
-        feats = model.encode_tiles(x)
+        feats = _encode_tiles(model, x)
     else:
-      feats = model.encode_tiles(x)
+      feats = _encode_tiles(model, x)
     feats_chunks.append(feats.detach().to("cpu"))
     coords_chunks.append(coords.detach().to("cpu"))
     batch_imgs = []
