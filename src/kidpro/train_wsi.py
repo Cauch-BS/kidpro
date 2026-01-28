@@ -17,6 +17,7 @@ from .data.dataset_mil import MILDataset
 from .data.split_mil import build_mil_split_csv
 from .data.transform import get_transforms
 from .modeling.factory_wsi import build_model_mil
+from .modeling.lora import apply_lora
 from .training.loop_mil import fit_mil
 from .training.rankmix import RankMixSampler, TileScorer
 from .utils.model_io import load_state_dict_generic, load_state_dict_with_remap
@@ -91,7 +92,18 @@ def main(hcfg: DictConfig) -> None:
       "Disabling class weights because a balanced sampler is already in use."
     )
 
-  model = build_model_mil(cfg).to(rr.device)
+  # -------------------------
+  # Stage 2 LoRA-on-LongNet support (RankMix):
+  # If Stage 1 was trained WITHOUT LoRA, we must load the Stage 1 checkpoint into a
+  # non-LoRA model first (strict=True), then apply LoRA wrappers for Stage 2 training.
+  # -------------------------
+  want_stage2_longnet_lora = bool(cfg.train.rankmix.enabled) and bool(cfg.model.lora.enabled) and ("longnet" in set(cfg.model.lora.apply_to))
+  cfg_for_build = cfg
+  if want_stage2_longnet_lora:
+    cfg_for_build = cfg.model_copy(deep=True)
+    cfg_for_build.model.lora.enabled = False
+
+  model = build_model_mil(cfg_for_build).to(rr.device)
   model_mil = cast(Any, model)
   if cfg.model.lora.enabled:
     try:
@@ -102,6 +114,27 @@ def main(hcfg: DictConfig) -> None:
       raise RuntimeError(
         "Failed to resolve or load tile-trained best_model.pt for LoRA initialization."
       ) from e
+
+  # -------------------------
+  # RankMix Stage 2: load Stage 1 checkpoint BEFORE applying LongNet LoRA
+  # -------------------------
+  if cfg.train.rankmix.enabled:
+    stage1_ckpt = cfg.train.rankmix.stage1_checkpoint
+    if stage1_ckpt is None:
+      raise ValueError(
+        "[RANKMIX] stage1_checkpoint is required when rankmix.enabled=true. "
+        "First run Stage 1 training with rankmix.enabled=false."
+      )
+    log.info("[RANKMIX] Loading Stage 1 checkpoint: %s", stage1_ckpt)
+    # Stage1 checkpoints may have structural drift in module paths (e.g.
+    # tile_encoder.* vs tile_encoder.encoder.*). Use the remapping loader.
+    load_state_dict_with_remap(model, stage1_ckpt, strict=True, drop_heads=False)
+    log.info("[RANKMIX] Stage 1 model loaded successfully")
+
+  # Apply LoRA to LongNet AFTER Stage 1 weights are loaded (Stage 2 only).
+  if want_stage2_longnet_lora:
+    model_mil.slide_encoder = apply_lora(cfg, cast(nn.Module, model_mil.slide_encoder), freeze_base=True)
+    log.info("[LORA] Applied LoRA to LongNet slide_encoder for Stage 2 training")
 
   # -------------------------
   # Compute tile_encoder hash for cache invalidation
@@ -214,20 +247,6 @@ def main(hcfg: DictConfig) -> None:
   rankmix_sampler = None
 
   if cfg.train.rankmix.enabled:
-    # Load Stage 1 checkpoint (required for Stage 2)
-    stage1_ckpt = cfg.train.rankmix.stage1_checkpoint
-    if stage1_ckpt is None:
-      raise ValueError(
-        "[RANKMIX] stage1_checkpoint is required when rankmix.enabled=true. "
-        "First run Stage 1 training with rankmix.enabled=false."
-      )
-
-    log.info("[RANKMIX] Loading Stage 1 checkpoint: %s", stage1_ckpt)
-    # Stage1 checkpoints may have structural drift in module paths (e.g.
-    # tile_encoder.* vs tile_encoder.encoder.*). Use the remapping loader.
-    load_state_dict_with_remap(model, stage1_ckpt, strict=True, drop_heads=False)
-    log.info("[RANKMIX] Stage 1 model loaded successfully")
-
     # Get embedding dimension from model config
     embed_dim = cfg.model.longnet_dim  # Typically 1536 for GigaPath
 
