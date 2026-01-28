@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import pickle
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Optional, cast
 
@@ -13,6 +13,36 @@ import torch.nn as nn
 from ..config.schema import AppCfg
 
 log = logging.getLogger(__name__)
+
+# --- Checkpoint diagnostics -------------------------------------------------
+
+def _top_level_prefixes(keys: Sequence[str], *, limit: int = 24) -> list[str]:
+  """
+  Return a short list of "top-level" key prefixes for debugging, e.g.:
+    slide_encoder, classifier, tile_encoder, backbone, model, base_model, ...
+  """
+  prefixes: set[str] = set()
+  for k in keys:
+    if not k:
+      continue
+    prefixes.add(k.split(".", 1)[0])
+  out = sorted(prefixes)
+  if len(out) > limit:
+    return out[:limit] + ["..."]
+  return out
+
+
+def _raise_empty_prefix_filter(*, ckpt_path: Path, ckpt_prefix: str, keys: Sequence[str]) -> None:
+  tops = _top_level_prefixes(keys)
+  sample = sorted(keys)[:8]
+  raise RuntimeError(
+    "Checkpoint prefix filter matched 0 keys. "
+    f"ckpt_path={ckpt_path} ckpt_prefix={ckpt_prefix!r}. "
+    f"Top-level prefixes seen: {tops}. "
+    f"Sample keys: {sample}. "
+    "This usually means you pointed at the wrong checkpoint (or a checkpoint saved without module prefixes)."
+  )
+
 
 # Task-specific heads/decoders that should be ignored when loading a backbone/tile encoder checkpoint.
 _HEAD_PREFIXES: tuple[str, ...] = (
@@ -307,7 +337,10 @@ def load_state_dict_with_remap(
 
   state = _strip_module_prefix(state)
   if ckpt_prefix:
+    keys_before = list(state.keys())
     state = {k: v for k, v in state.items() if k.startswith(ckpt_prefix)}
+    if not state:
+      _raise_empty_prefix_filter(ckpt_path=ckpt_path, ckpt_prefix=str(ckpt_prefix), keys=keys_before)
     state = _strip_prefix(state, ckpt_prefix)
   if exclude_prefixes:
     state = {k: v for k, v in state.items() if not k.startswith(exclude_prefixes)}
@@ -365,7 +398,10 @@ def load_state_dict_generic(
 
   state = _strip_module_prefix(state)
   if ckpt_prefix:
+    keys_before = list(state.keys())
     state = {k: v for k, v in state.items() if k.startswith(ckpt_prefix)}
+    if not state:
+      _raise_empty_prefix_filter(ckpt_path=ckpt_path, ckpt_prefix=str(ckpt_prefix), keys=keys_before)
     state = _strip_prefix(state, ckpt_prefix)
   if exclude_prefixes:
     state = {k: v for k, v in state.items() if not k.startswith(exclude_prefixes)}
