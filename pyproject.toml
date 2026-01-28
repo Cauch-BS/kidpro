@@ -39,7 +39,7 @@ dependencies = [
   "segmentation-models-pytorch>=0.3.3",
   "timm>=0.9.0",
   "peft>=0.11.1",
-  "torchscale @ git+https://github.com/Cauch-BS/torchscale.git",
+  "torchscale @ git+http://github.khdp-forward-server/Cauch-BS/torchscale.git",
   # ML metrics (FIXED: was missing)
   "scikit-learn>=1.3",
   "ipykernel>=6.31.0",

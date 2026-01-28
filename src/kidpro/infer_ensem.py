@@ -12,9 +12,10 @@ import torch
 from omegaconf import DictConfig
 from tqdm import tqdm
 
-from .config.load import CONFIG, RuntimeResolved, resolve_best_model_from_mlflow
+from .config.load import CONFIG, RuntimeResolved
 from .config.schema import AppCfg
 from .data.dataset_mil import MILDataset
+from .data.transform import get_transforms
 from .modeling.factory_wsi import build_model_mil
 from .utils.model_io import load_state_dict_generic
 
@@ -44,31 +45,21 @@ def _resolve_fallback_weights(infer: Dict[str, Any]) -> Path:
 
 
 def _resolve_weight_path(cfg: AppCfg, infer: Dict[str, Any]) -> Path:
-  # Preferred: singular config key.
-  weights_path = infer.get("weights_path")
-  if weights_path:
-    return Path(weights_path)
+  # Preferred: explicit WSI weights (slide_encoder + classifier).
+  wsi_weights_path = infer.get("wsi_weights_path")
+  if wsi_weights_path:
+    return Path(wsi_weights_path)
 
   # Back-compat: accept weights_paths but take the first.
   paths = infer.get("weights_paths") or []
   if isinstance(paths, (str, Path)):
     paths = [paths]
   if paths:
-    log.warning("infer_ensem.weights_paths is deprecated; use infer_ensem.weights_path instead.")
+    log.warning("infer_ensem.weights_paths is deprecated; use infer_ensem.wsi_weights_path instead.")
     return Path(paths[0])
 
-  # Default: best from MLflow if enabled, else fallback.
-  if cfg.mlflow.enabled:
-    try:
-      model_name = cfg.mlflow.registry_model_name
-      ckpt_path = resolve_best_model_from_mlflow(cfg, model_name)
-      return Path(ckpt_path)
-    except Exception as e:
-      log.warning(
-        "MLflow resolution failed; falling back to local weights. err=%s",
-        e,
-        exc_info=True,
-      )
+  # NOTE: infer_ensem should not depend on MLflow. If weights aren't provided,
+  # fall back to a local checkpoint only.
   return _resolve_fallback_weights(infer)
 
 
@@ -190,8 +181,7 @@ def _get_tile_embeddings_from_stream(
     coords_list.append(coords)
 
   if tile_count == 0:
-    log.warning("Empty tile stream for slide.")
-    return torch.tensor([]), torch.tensor([])
+    raise RuntimeError("Empty tile stream for slide.")
 
   feats_all = torch.cat(feats_list, dim=0)
   coords_all = torch.cat(coords_list, dim=0)
@@ -213,6 +203,8 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
   gt_col = str(infer.get("gt_col", "GT"))
   split_col = str(infer.get("split_col", "split"))
   test_value = str(infer.get("test_value", "test"))
+  metric_split = infer.get("metric_split", None)
+  metric_split = None if metric_split in (None, "", "null") else str(metric_split)
 
   if slide_id_col not in df.columns:
     raise ValueError(f"CSV missing slide_id_col={slide_id_col!r}. Columns={list(df.columns)}")
@@ -220,6 +212,9 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
     log.warning("CSV missing gt_col=%r; metrics will be skipped.", gt_col)
   if split_col not in df.columns:
     log.warning("CSV missing split_col=%r; output will include all rows.", split_col)
+    if metric_split is not None:
+      log.warning("infer_ensem.metric_split=%r ignored because split_col is missing in the CSV.", metric_split)
+      metric_split = None
 
   output_dir = Path(infer.get("output_dir") or cfg.run_dir or Path.cwd())
   output_dir.mkdir(parents=True, exist_ok=True)
@@ -243,13 +238,47 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
   use_amp = (rr.device == "cuda") if amp_cfg == "auto" else (amp_cfg == "true")
 
   weights_path = _resolve_weight_path(cfg, infer)
-  log.info("[infer_ensem] weights=%s", str(weights_path))
+  tile_weights_path = infer.get("tile_encoder_weights_path")
+  tile_weights_path = None if tile_weights_path in (None, "", "null") else str(tile_weights_path)
+
+  log.info("[infer_ensem] wsi_weights=%s", str(weights_path))
+  log.info(
+    "[infer_ensem] tile_encoder_weights=%s",
+    tile_weights_path if tile_weights_path else "null (using foundation/default weights)",
+  )
 
   # Build and load model once.
   model = build_model_mil(cfg)
-  model = load_state_dict_generic(model, weights_path)
+
+  # If provided, load tile-encoder weights explicitly.
+  # This is the authoritative source for tile encoder weights in inference.
+  if tile_weights_path:
+    if not hasattr(model, "tile_encoder"):
+      raise TypeError("MIL model missing tile_encoder; cannot load infer_ensem.tile_encoder_weights_path.")
+    log.info("[infer_ensem] loading tile_encoder weights from %s", tile_weights_path)
+    model.tile_encoder = load_state_dict_generic(  # type: ignore[attr-defined]
+      model.tile_encoder,  # type: ignore[attr-defined]
+      Path(tile_weights_path),
+      drop_heads=True,
+    )
+
+  # Load slide encoder + classifier weights from the WSI checkpoint.
+  # IMPORTANT: do NOT overwrite tile encoder here.
+  log.info("[infer_ensem] loading slide_encoder + classifier from %s", str(weights_path))
+  model = load_state_dict_generic(
+    model,
+    weights_path,
+    drop_heads=False,
+    include_prefixes=("slide_encoder.", "classifier."),
+  )
+
   model = model.to(rr.device)
   model.eval()
+
+  # Use the same deterministic preprocessing as MIL validation.
+  # This matters when we need to compute embeddings on cache-miss (require_cached_embeddings=false):
+  # training uses Resize(ps) + optional CenterCrop(model.input_size) + normalization + ToTensorV2.
+  _, val_tf = get_transforms(cfg)
 
   # Create a minimal MIL dataframe so we can reuse MILDataset's embedding-cache reader.
   df_mil = pd.DataFrame(
@@ -261,7 +290,7 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
   )
   # Ensure GT is non-null to satisfy MILDataset invariants (metrics are handled separately).
   df_mil["GT"] = pd.to_numeric(df_mil["GT"], errors="coerce").fillna(0).astype(int)
-  ds = MILDataset(cfg, df_mil, transform=None)
+  ds = MILDataset(cfg, df_mil, transform=val_tf)
 
   out_rows: list[dict[str, Any]] = []
   y_true: list[int] = []
@@ -336,9 +365,16 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
     gt_val = None
     if gt_col in df.columns and pd.notna(row.get(gt_col)):
       gt_val = int(row[gt_col])
-      y_true.append(gt_val)
-      y_pred.append(pred)
-      y_score.append(pred_prob)
+      if metric_split is None:
+        y_true.append(gt_val)
+        y_pred.append(pred)
+        y_score.append(pred_prob)
+      else:
+        row_split = str(row[split_col]) if (split_col in df.columns and pd.notna(row.get(split_col))) else None
+        if row_split == metric_split:
+          y_true.append(gt_val)
+          y_pred.append(pred)
+          y_score.append(pred_prob)
 
     split_val = str(row[split_col]) if (split_col in df.columns and pd.notna(row.get(split_col))) else None
     out_rows.append(

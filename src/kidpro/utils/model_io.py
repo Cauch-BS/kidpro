@@ -65,7 +65,13 @@ def _has_lora_keys(state: Mapping[str, torch.Tensor]) -> bool:
   return False
 
 
-def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> nn.Module:
+def load_state_dict_generic(
+  model: nn.Module,
+  ckpt_path: Path,
+  *,
+  drop_heads: bool = True,
+  include_prefixes: tuple[str, ...] | None = None,
+) -> nn.Module:
   ckpt_path = Path(ckpt_path)
   if not ckpt_path.exists():
     raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
@@ -102,16 +108,19 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> nn.Module:
   if has_lora and callable(getattr(model, "merge_and_unload", None)):
     # Some checkpoints store weights under a full model path; normalize.
     state = _strip_prefix(state, "backbone.tile_encoder.")
+    if include_prefixes:
+      state = {k: v for k, v in state.items() if k.startswith(include_prefixes)}
     missing, unexpected = model.load_state_dict(state, strict=False)
     merged = model.merge_and_unload()  # type: ignore[operator]
     if merged is None:
       merged = model
-    print(
-      "[FND CKPT]",
-      "peft_merge=1",
-      f"missing={len(missing)} (showing up to 8): {missing[:8]}",
-      f"unexpected={len(unexpected)} (showing up to 8): {unexpected[:8]}",
+    msg = (
+      "[FND CKPT] peft_merge=1 "
+      f"missing={len(missing)} (showing up to 8): {missing[:8]} "
+      f"unexpected={len(unexpected)} (showing up to 8): {unexpected[:8]}"
     )
+    print(msg)
+    log.info(msg)
     return cast(nn.Module, merged)
 
   if has_lora:
@@ -120,8 +129,14 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> nn.Module:
       RuntimeWarning,
     )
 
-  head_prefixes = ("fc.", "classifier.", "head.", "last_linear.")
-  filtered = {k: v for k, v in state.items() if not k.startswith(head_prefixes)}
+  # Many checkpoints in this repo are *backbone-only* (e.g. timm encoders) and we
+  # intentionally drop classifier heads when loading them. For full-model
+  # checkpoints (e.g. WSI MIL), callers must set drop_heads=False.
+  if drop_heads:
+    head_prefixes = ("fc.", "classifier.", "head.", "last_linear.")
+    filtered = {k: v for k, v in state.items() if not k.startswith(head_prefixes)}
+  else:
+    filtered = dict(state)
 
   prefixes = (
     "module.",
@@ -162,6 +177,9 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> nn.Module:
       collisions.append((out_k, k))
     stripped[out_k] = v
 
+  if include_prefixes:
+    stripped = {k: v for k, v in stripped.items() if k.startswith(include_prefixes)}
+
   if collisions:
     raise RuntimeError(
       "Key collision(s) after prefix stripping, e.g. "
@@ -170,12 +188,14 @@ def load_state_dict_generic(model: nn.Module, ckpt_path: Path) -> nn.Module:
     )
 
   missing, unexpected = model.load_state_dict(stripped, strict=False)
-  print(
-    "[FND CKPT]",
-    f"dropped_lora={dropped_lora}",
-    f"missing={len(missing)} (showing up to 8): {missing[:8]}",
-    f"unexpected={len(unexpected)} (showing up to 8): {unexpected[:8]}",
+  msg = (
+    "[FND CKPT] "
+    f"dropped_lora={dropped_lora} "
+    f"missing={len(missing)} (showing up to 8): {missing[:8]} "
+    f"unexpected={len(unexpected)} (showing up to 8): {unexpected[:8]}"
   )
+  print(msg)
+  log.info(msg)
   return model
 
 

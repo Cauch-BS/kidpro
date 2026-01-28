@@ -3,9 +3,14 @@ defaults:
   - model: prov_gigapath
   - train: default_wsi
   - dataset: wsi
-  - mlflow: default_wsi
+  - mlflow: disabled
   - core: default
   - _self_
+
+# In inference we expect to load slide weights from `infer_ensem.wsi_weights_path`,
+# so don't preload a separate slide encoder checkpoint.
+model:
+  longnet_pretrained: false
 
 # CSV inference using cached MIL embeddings.
 infer_ensem:
@@ -23,14 +28,19 @@ infer_ensem:
   gt_col: GT
   split_col: split
   test_value: test
+  # If set (e.g. val|test|train), metrics are computed only on that split.
+  # If null/empty, metrics are computed on all rows with GT.
+  metric_split: null
 
   # --- Inference settings ---
   threshold: 0.5
   amp: auto                # auto|true|false
-  require_cached_embeddings: true
+  require_cached_embeddings: false
 
   # --- Weights ---
-  # If weights_path is null:
-  # - if mlflow.enabled=true, uses the best model from registry
-  # - else falls back to models/best_model.pt (repo-relative)
-  weights_path: null
+  # WSI checkpoint containing slide_encoder + classifier weights.
+  # If null, falls back to models/best_model.pt (repo-relative).
+  wsi_weights_path: null
+  # Optional: tile-encoder checkpoint path (loaded into model.tile_encoder).
+  # If null, the foundation/default weights from `model.weights` are used.
+  tile_encoder_weights_path: null
