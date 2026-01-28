@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from pathlib import Path
@@ -43,58 +42,6 @@ def _resolve_path(p: str | Path) -> Path:
   if pp.is_absolute():
     return pp
   return (_original_cwd() / pp).resolve()
-
-
-def _sha256_file(path: Path, *, chunk_bytes: int = 8 * 1024 * 1024) -> str:
-  h = hashlib.sha256()
-  with open(path, "rb") as f:
-    while True:
-      b = f.read(int(chunk_bytes))
-      if not b:
-        break
-      h.update(b)
-  return h.hexdigest()
-
-
-def _log_weights_file(label: str, path: Path) -> None:
-  try:
-    st = path.stat()
-    sha = _sha256_file(path)
-    log.info(
-      "[infer_ensem] %s file=%s size_bytes=%d mtime=%s sha256=%s",
-      label,
-      str(path),
-      int(st.st_size),
-      str(getattr(st, "st_mtime", "")),
-      sha,
-    )
-  except Exception as exc:
-    log.warning("[infer_ensem] %s could not fingerprint file=%s: %s", label, str(path), exc)
-
-
-def _module_fingerprint(mod: Any, *, label: str, max_keys: int = 10) -> None:
-  """
-  Lightweight “proof” that a module isn't random init / wrong weights:
-  log a small deterministic set of tensor stats from state_dict.
-  """
-  try:
-    sd = mod.state_dict()
-    keys = sorted(sd.keys())
-    if not keys:
-      log.warning("[infer_ensem] %s fingerprint: empty state_dict()", label)
-      return
-    pick = keys[: max_keys // 2] + keys[-(max_keys - max_keys // 2):]
-    parts: list[str] = []
-    for k in pick:
-      v = sd.get(k)
-      if not isinstance(v, torch.Tensor) or v.numel() == 0:
-        continue
-      vv = v.detach().float().cpu()
-      parts.append(f"{k}:shape={tuple(vv.shape)} mean={vv.mean().item():.6g} std={vv.std().item():.6g} absmax={vv.abs().max().item():.6g}")
-    if parts:
-      log.info("[infer_ensem] %s fingerprint: %s", label, " | ".join(parts))
-  except Exception as exc:
-    log.warning("[infer_ensem] %s fingerprint failed: %s", label, exc)
 
 
 def _resolve_fallback_weights(infer: Dict[str, Any]) -> Path:
@@ -303,8 +250,6 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
   amp_cfg = str(infer.get("amp", "auto")).lower()
   use_amp = (rr.device == "cuda") if amp_cfg == "auto" else (amp_cfg == "true")
 
-  verify_weights = bool(infer.get("verify_weights", False))
-
   weights_path = _resolve_weight_path(cfg, infer)
   tile_weights_path = infer.get("tile_encoder_weights_path")
   tile_weights_path = None if tile_weights_path in (None, "", "null") else str(tile_weights_path)
@@ -324,21 +269,15 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
     if not hasattr(model, "tile_encoder"):
       raise TypeError("MIL model missing tile_encoder; cannot load infer_ensem.tile_encoder_weights_path.")
     tile_weights_resolved = _resolve_path(tile_weights_path)
-    if verify_weights:
-      _log_weights_file("tile_encoder_weights", tile_weights_resolved)
     log.info("[infer_ensem] loading tile_encoder weights from %s", str(tile_weights_resolved))
     model.tile_encoder = load_state_dict_generic( # type: ignore
       cast(torch.nn.Module, model.tile_encoder),
       tile_weights_resolved,
       drop_heads=True,
     )
-    if verify_weights:
-      _module_fingerprint(model.tile_encoder, label="tile_encoder")
 
   # Load slide encoder + classifier weights from the WSI checkpoint.
   # IMPORTANT: do NOT overwrite tile encoder here.
-  if verify_weights:
-    _log_weights_file("wsi_weights", weights_path)
   log.info("[infer_ensem] loading slide_encoder + classifier from %s", str(weights_path))
   if not hasattr(model, "slide_encoder") or not hasattr(model, "classifier"):
     raise TypeError("MIL model missing slide_encoder/classifier; cannot load WSI checkpoint.")
@@ -356,9 +295,6 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
     drop_heads=False,
     ckpt_prefix="classifier.",
   )
-  if verify_weights:
-    _module_fingerprint(model.slide_encoder, label="slide_encoder")
-    _module_fingerprint(model.classifier, label="classifier")
 
   model = model.to(rr.device)
   model.eval()
