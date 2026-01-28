@@ -14,6 +14,19 @@ from ..config.schema import AppCfg
 
 log = logging.getLogger(__name__)
 
+# Task-specific heads/decoders that should be ignored when loading a backbone/tile encoder checkpoint.
+_HEAD_PREFIXES: tuple[str, ...] = (
+  "fc.",
+  "classifier.",
+  "head.",
+  "last_linear.",
+  # Common decoder-style heads (e.g. segmentation).
+  "decoder.",
+  "decode_head.",
+  "seg_head.",
+  "segmentation_head.",
+)
+
 
 def freeze_module(module: nn.Module) -> None:
   for p in module.parameters():
@@ -65,13 +78,90 @@ def _has_lora_keys(state: Mapping[str, torch.Tensor]) -> bool:
   return False
 
 
-def _replace_base_layer(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+def _replace_base_layer(
+  state: Mapping[str, torch.Tensor],
+  model: nn.Module | None = None,
+) -> dict[str, torch.Tensor]:
   """
-  Normalize PEFT/timm LoRA saved keys:
-    - timm LoRA adapters often store weights under `...proj.base_layer.weight`
-      whereas the underlying module expects `...proj.weight`.
+  Normalize `.base_layer.` key drift between checkpoints and models.
+
+  Depending on the LoRA implementation, modules may expose parameters as:
+    - `...proj.weight`                 (plain module)
+    - `...proj.base_layer.weight`      (wrapped module exposing base_layer)
+
+  If `model` is provided, we remap keys *per-key* to best match the model's
+  `state_dict()` keys (preferring identity, then dropping, then adding
+  `.base_layer.`). If `model` is not provided (legacy behavior), we drop
+  `.base_layer.`.
   """
-  return {k.replace(".base_layer.", "."): v for k, v in state.items()}
+  # Legacy behavior: always drop `.base_layer.`
+  if model is None:
+    return {k.replace(".base_layer.", "."): v for k, v in state.items()}
+
+  try:
+    model_keys = set(model.state_dict().keys())
+  except Exception:
+    # If we can't inspect the model keys, preserve legacy behavior.
+    return {k.replace(".base_layer.", "."): v for k, v in state.items()}
+
+  # Only insert `.base_layer` before common parameter leaves.
+  param_leaves = {
+    "weight",
+    "bias",
+    "running_mean",
+    "running_var",
+    "num_batches_tracked",
+  }
+
+  def _skip_key(k: str) -> bool:
+    return ("lora_" in k) or ("modules_to_save" in k)
+
+  def _drop(k: str) -> str:
+    return k.replace(".base_layer.", ".")
+
+  def _add(k: str) -> str:
+    if ".base_layer." in k:
+      return k
+    parts = k.split(".")
+    if len(parts) < 2 or parts[-1] not in param_leaves:
+      return k
+    parts.insert(-1, "base_layer")
+    return ".".join(parts)
+
+  remapped: dict[str, torch.Tensor] = {}
+  collisions: list[tuple[str, str]] = []
+  changed = 0
+  for k, v in state.items():
+    if _skip_key(k):
+      kk = k
+    else:
+      # Prefer identity; otherwise try drop/add variants if they match model keys.
+      kd = _drop(k)
+      ka = _add(k)
+      if k in model_keys:
+        kk = k
+      elif kd in model_keys:
+        kk = kd
+      elif ka in model_keys:
+        kk = ka
+      else:
+        kk = k
+    if kk != k:
+      changed += 1
+    if kk in remapped and remapped[kk] is not v:
+      collisions.append((kk, k))
+    remapped[kk] = v
+
+  if collisions:
+    raise RuntimeError(
+      "Key collision(s) after base_layer normalization, e.g. "
+      + ", ".join([f"{out_k} <- {src}" for out_k, src in collisions[:5]])
+      + (" ..." if len(collisions) > 5 else "")
+    )
+
+  if changed:
+    log.info("[FND CKPT] base_layer_norm changed=%d", changed)
+  return remapped
 
 
 def _remap_encoder_variant(
@@ -108,6 +198,7 @@ def _remap_encoder_variant(
   rules: list[tuple[str, str]] = [
     ("base_model.model.", "base_model.model.encoder."),
     ("model.", "model.encoder."),
+    ("tile_encoder.", "tile_encoder.encoder."),
   ]
 
   def _add_encoder(k: str) -> str:
@@ -164,6 +255,73 @@ def _remap_encoder_variant(
 
   log.info("[FND CKPT] key_remap=%s matched=%d->%d", best_name, base, best)
   return remapped
+
+
+def load_state_dict_with_remap(
+  model: nn.Module,
+  ckpt_path: Path,
+  *,
+  strict: bool = True,
+  drop_heads: bool = False,
+  include_prefixes: tuple[str, ...] | None = None,
+  exclude_prefixes: tuple[str, ...] | None = None,
+  ckpt_prefix: str | None = None,
+) -> nn.Module:
+  """
+  Load a *full model* checkpoint with key remapping, without the "backbone-only"
+  prefix-stripping logic in `load_state_dict_generic`.
+
+  This is intended for cases like loading an older `best_model.pt` into a newer
+  model class where wrapper structure changed (e.g. `tile_encoder.*` vs
+  `tile_encoder.encoder.*`, or `.base_layer.` drift).
+  """
+  ckpt_path = Path(ckpt_path)
+  if not ckpt_path.exists():
+    raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+
+  if ckpt_path.suffix == ".safetensors":
+    try:
+      from safetensors.torch import load_file
+    except Exception as e:
+      raise RuntimeError(
+        "safetensors is required to load .safetensors checkpoints. "
+        "Install with: pip install safetensors"
+      ) from e
+    state = load_file(str(ckpt_path))
+  else:
+    try:
+      try:
+        obj = torch.load(str(ckpt_path), map_location="cpu", weights_only=True)
+      except TypeError:
+        obj = torch.load(str(ckpt_path), map_location="cpu")
+    except (pickle.UnpicklingError, RuntimeError):
+      log.warning(
+        "[WARNING] Checkpoint requires pickle deserialization (full object). "
+        "Retrying with weights_only=False. Do this only for trusted checkpoints."
+      )
+      obj = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+    except Exception as e:
+      raise RuntimeError(f"Failed to load checkpoint from {ckpt_path}: {e}") from e
+
+    state = _as_state_dict(obj)
+
+  state = _strip_module_prefix(state)
+  if ckpt_prefix:
+    state = {k: v for k, v in state.items() if k.startswith(ckpt_prefix)}
+    state = _strip_prefix(state, ckpt_prefix)
+  if exclude_prefixes:
+    state = {k: v for k, v in state.items() if not k.startswith(exclude_prefixes)}
+  if drop_heads:
+    state = {k: v for k, v in state.items() if not k.startswith(_HEAD_PREFIXES)}
+  if include_prefixes:
+    state = {k: v for k, v in state.items() if k.startswith(include_prefixes)}
+
+  # Remap known structural drift against the *current model*.
+  state = _replace_base_layer(state, model=model)
+  state = _remap_encoder_variant(state, model)
+
+  model.load_state_dict(state, strict=strict)
+  return model
 
 
 def load_state_dict_generic(
@@ -241,7 +399,7 @@ def load_state_dict_generic(
   if has_lora and callable(getattr(model, "merge_and_unload", None)):
     # Some checkpoints store weights under a full model path; normalize.
     state = _strip_prefix(state, "backbone.tile_encoder.")
-    state = _replace_base_layer(state)
+    state = _replace_base_layer(state, model=model)
     if ckpt_prefix:
       state = {k: v for k, v in state.items() if k.startswith(ckpt_prefix)}
       state = _strip_prefix(state, ckpt_prefix)

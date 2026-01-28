@@ -19,7 +19,7 @@ from .data.transform import get_transforms
 from .modeling.factory_wsi import build_model_mil
 from .training.loop_mil import fit_mil
 from .training.rankmix import RankMixSampler, TileScorer
-from .utils.model_io import load_state_dict_generic
+from .utils.model_io import load_state_dict_generic, load_state_dict_with_remap
 
 log = logging.getLogger(__name__)
 
@@ -223,8 +223,9 @@ def main(hcfg: DictConfig) -> None:
       )
 
     log.info("[RANKMIX] Loading Stage 1 checkpoint: %s", stage1_ckpt)
-    state_dict = torch.load(stage1_ckpt, map_location=rr.device)
-    model.load_state_dict(state_dict)
+    # Stage1 checkpoints may have structural drift in module paths (e.g.
+    # tile_encoder.* vs tile_encoder.encoder.*). Use the remapping loader.
+    load_state_dict_with_remap(model, stage1_ckpt, strict=True, drop_heads=False)
     log.info("[RANKMIX] Stage 1 model loaded successfully")
 
     # Get embedding dimension from model config
