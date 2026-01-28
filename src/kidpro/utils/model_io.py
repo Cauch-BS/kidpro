@@ -57,10 +57,26 @@ _HEAD_PREFIXES: tuple[str, ...] = (
   "segmentation_head.",
 )
 
+# Common module wrappers/prefixes to strip for "backbone-only" checkpoints.
+_STRIP_PREFIXES: tuple[str, ...] = (
+  "module.",
+  "model.",
+  "backbone.",
+  "tile_encoder.",
+  "tile_encoder.base_model.",
+  "tile_encoder.base_model.model.",
+  "base_model.",
+  "base_model.model.",
+)
+
 
 def freeze_module(module: nn.Module) -> None:
   for p in module.parameters():
     p.requires_grad = False
+
+
+def _drop_head_keys(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+  return {k: v for k, v in state.items() if not k.startswith(_HEAD_PREFIXES)}
 
 
 def _as_state_dict(obj: object) -> dict[str, torch.Tensor]:
@@ -98,14 +114,69 @@ def _strip_module_prefix(state: Mapping[str, torch.Tensor]) -> dict[str, torch.T
 def _strip_prefix(state: Mapping[str, torch.Tensor], prefix: str) -> dict[str, torch.Tensor]:
   if not prefix:
     return dict(state)
-  return {(k[len(prefix):] if k.startswith(prefix) else k): v for k, v in state.items()}
+  return {(k.removeprefix(prefix) if k.startswith(prefix) else k): v for k, v in state.items()}
 
 
 def _has_lora_keys(state: Mapping[str, torch.Tensor]) -> bool:
-  for k in state.keys():
-    if "lora_" in k or "modules_to_save" in k:
-      return True
-  return False
+  return any(("lora_" in k) or ("modules_to_save" in k) for k in state.keys())
+
+
+def _load_checkpoint_state(ckpt_path: Path) -> dict[str, torch.Tensor]:
+  """
+  Load a checkpoint and normalize it into a state_dict on CPU.
+
+  Supports:
+  - plain state_dict
+  - {"state_dict": ...} style payloads
+  - full nn.Module payloads (discouraged, but supported)
+  - .safetensors
+  """
+  ckpt_path = Path(ckpt_path)
+  if not ckpt_path.exists():
+    raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+
+  if ckpt_path.suffix == ".safetensors":
+    try:
+      from safetensors.torch import load_file
+    except Exception as e:
+      raise RuntimeError(
+        "safetensors is required to load .safetensors checkpoints. "
+        "Install with: pip install safetensors"
+      ) from e
+    state = dict(load_file(str(ckpt_path)))
+    return _strip_module_prefix(state)
+
+  try:
+    try:
+      obj = torch.load(str(ckpt_path), map_location="cpu", weights_only=True)
+    except TypeError:
+      obj = torch.load(str(ckpt_path), map_location="cpu")
+  except (pickle.UnpicklingError, RuntimeError):
+    log.warning(
+      "[WARNING] Checkpoint requires pickle deserialization (full object). "
+      "Retrying with weights_only=False. Do this only for trusted checkpoints."
+    )
+    obj = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+  except Exception as e:
+    raise RuntimeError(f"Failed to load checkpoint from {ckpt_path}: {e}") from e
+
+  state = _as_state_dict(obj)
+  return _strip_module_prefix(state)
+
+
+def _apply_ckpt_prefix(
+  *,
+  state: Mapping[str, torch.Tensor],
+  ckpt_path: Path,
+  ckpt_prefix: str | None,
+) -> dict[str, torch.Tensor]:
+  if not ckpt_prefix:
+    return dict(state)
+  keys_before = list(state.keys())
+  filtered = {k: v for k, v in state.items() if k.startswith(ckpt_prefix)}
+  if not filtered:
+    _raise_empty_prefix_filter(ckpt_path=ckpt_path, ckpt_prefix=str(ckpt_prefix), keys=keys_before)
+  return _strip_prefix(filtered, ckpt_prefix)
 
 
 def _replace_base_layer(
@@ -287,6 +358,95 @@ def _remap_encoder_variant(
   return remapped
 
 
+def _remap_wrapper_prefix(
+  state: Mapping[str, torch.Tensor],
+  model: nn.Module,
+) -> dict[str, torch.Tensor]:
+  """
+  Best-effort remap for wrapper prefix drift between checkpoints and models.
+
+  This handles cases where:
+    - model keys are like: `base_model.model.*` (common for PEFT-wrapped modules)
+    - checkpoint keys are like: `cls_token`, `encoder.layers.0.*`, ...
+  or the reverse.
+  """
+  state = dict(state)
+  if not state:
+    return state
+
+  try:
+    model_keys = set(model.state_dict().keys())
+  except Exception:
+    return state
+  if not model_keys:
+    return state
+
+  def _baseline_matches(keys: Sequence[str]) -> int:
+    return sum(1 for k in keys if k in model_keys)
+
+  def _strip_wrappers(k: str) -> str:
+    out = k
+    while True:
+      matched = False
+      for prefix in _STRIP_PREFIXES:
+        if out.startswith(prefix):
+          out = out[len(prefix):]
+          matched = True
+          break
+      if not matched:
+        break
+    return out.replace(".base_layer.", ".")
+
+  def _add_prefix(prefix: str, k: str) -> str:
+    return k if k.startswith(prefix) else (prefix + k)
+
+  keys = list(state.keys())
+  base = _baseline_matches(keys)
+  strip_score = _baseline_matches([_strip_wrappers(k) for k in keys])
+
+  add_prefixes = ("base_model.model.", "model.", "backbone.", "tile_encoder.", "slide_encoder.", "classifier.")
+  add_scores: dict[str, int] = {}
+  for p in add_prefixes:
+    add_scores[p] = _baseline_matches([_add_prefix(p, k) for k in keys])
+
+  best_name = "identity"
+  best_score = base
+  best_fn = lambda k: k
+
+  if strip_score > best_score:
+    best_name = "strip_wrappers"
+    best_score = strip_score
+    best_fn = _strip_wrappers
+
+  for p, sc in add_scores.items():
+    if sc > best_score:
+      best_name = f"add_prefix:{p}"
+      best_score = sc
+      best_fn = lambda k, p=p: _add_prefix(p, k) # type: ignore
+
+  improve = best_score - base
+  if best_name == "identity" or (improve < 32 and improve < int(0.05 * max(1, base))):
+    return state
+
+  remapped: dict[str, torch.Tensor] = {}
+  collisions: list[tuple[str, str]] = []
+  for k, v in state.items():
+    kk = best_fn(k)
+    if kk in remapped and remapped[kk] is not v:
+      collisions.append((kk, k))
+    remapped[kk] = v
+
+  if collisions:
+    raise RuntimeError(
+      "Key collision(s) after wrapper prefix remap, e.g. "
+      + ", ".join([f"{out_k} <- {src}" for out_k, src in collisions[:5]])
+      + (" ..." if len(collisions) > 5 else "")
+    )
+
+  log.info("[FND CKPT] wrapper_remap=%s matched=%d->%d", best_name, base, best_score)
+  return remapped
+
+
 def load_state_dict_with_remap(
   model: nn.Module,
   ckpt_path: Path,
@@ -306,46 +466,12 @@ def load_state_dict_with_remap(
   `tile_encoder.encoder.*`, or `.base_layer.` drift).
   """
   ckpt_path = Path(ckpt_path)
-  if not ckpt_path.exists():
-    raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-
-  if ckpt_path.suffix == ".safetensors":
-    try:
-      from safetensors.torch import load_file
-    except Exception as e:
-      raise RuntimeError(
-        "safetensors is required to load .safetensors checkpoints. "
-        "Install with: pip install safetensors"
-      ) from e
-    state = load_file(str(ckpt_path))
-  else:
-    try:
-      try:
-        obj = torch.load(str(ckpt_path), map_location="cpu", weights_only=True)
-      except TypeError:
-        obj = torch.load(str(ckpt_path), map_location="cpu")
-    except (pickle.UnpicklingError, RuntimeError):
-      log.warning(
-        "[WARNING] Checkpoint requires pickle deserialization (full object). "
-        "Retrying with weights_only=False. Do this only for trusted checkpoints."
-      )
-      obj = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
-    except Exception as e:
-      raise RuntimeError(f"Failed to load checkpoint from {ckpt_path}: {e}") from e
-
-    state = _as_state_dict(obj)
-
-  state = _strip_module_prefix(state)
-  if ckpt_prefix:
-    keys_before = list(state.keys())
-    state = {k: v for k, v in state.items() if k.startswith(ckpt_prefix)}
-    if not state:
-      _raise_empty_prefix_filter(ckpt_path=ckpt_path, ckpt_prefix=str(ckpt_prefix), keys=keys_before)
-    state = _strip_prefix(state, ckpt_prefix)
+  state = _load_checkpoint_state(ckpt_path)
+  state = _apply_ckpt_prefix(state=state, ckpt_path=ckpt_path, ckpt_prefix=ckpt_prefix)
   if exclude_prefixes:
     state = {k: v for k, v in state.items() if not k.startswith(exclude_prefixes)}
   if drop_heads:
-    state = {k: v for k, v in state.items() if not k.startswith(_HEAD_PREFIXES)}
+    state = _drop_head_keys(state)
   if include_prefixes:
     state = {k: v for k, v in state.items() if k.startswith(include_prefixes)}
 
@@ -367,42 +493,8 @@ def load_state_dict_generic(
   ckpt_prefix: str | None = None,
 ) -> nn.Module:
   ckpt_path = Path(ckpt_path)
-  if not ckpt_path.exists():
-    raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-
-  if ckpt_path.suffix == ".safetensors":
-    try:
-      from safetensors.torch import load_file
-    except Exception as e:
-      raise RuntimeError(
-        "safetensors is required to load .safetensors checkpoints. "
-        "Install with: pip install safetensors"
-      ) from e
-    state = load_file(str(ckpt_path))
-  else:
-    try:
-      try:
-        obj = torch.load(str(ckpt_path), map_location="cpu", weights_only=True)
-      except TypeError:
-        obj = torch.load(str(ckpt_path), map_location="cpu")
-    except (pickle.UnpicklingError, RuntimeError):
-      log.warning(
-        "[WARNING] Checkpoint requires pickle deserialization (full object). "
-        "Retrying with weights_only=False. Do this only for trusted checkpoints."
-      )
-      obj = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
-    except Exception as e:
-      raise RuntimeError(f"Failed to load checkpoint from {ckpt_path}: {e}") from e
-
-    state = _as_state_dict(obj)
-
-  state = _strip_module_prefix(state)
-  if ckpt_prefix:
-    keys_before = list(state.keys())
-    state = {k: v for k, v in state.items() if k.startswith(ckpt_prefix)}
-    if not state:
-      _raise_empty_prefix_filter(ckpt_path=ckpt_path, ckpt_prefix=str(ckpt_prefix), keys=keys_before)
-    state = _strip_prefix(state, ckpt_prefix)
+  state = _load_checkpoint_state(ckpt_path)
+  state = _apply_ckpt_prefix(state=state, ckpt_path=ckpt_path, ckpt_prefix=ckpt_prefix)
   if exclude_prefixes:
     state = {k: v for k, v in state.items() if not k.startswith(exclude_prefixes)}
   has_lora = _has_lora_keys(state)
@@ -439,18 +531,7 @@ def load_state_dict_generic(
     if exclude_prefixes:
       state = {k: v for k, v in state.items() if not k.startswith(exclude_prefixes)}
     if drop_heads:
-      # Drop task-specific heads/decoders for backbone-only loads (tile encoders).
-      head_prefixes = (
-        "fc.",
-        "classifier.",
-        "head.",
-        "last_linear.",
-        "decoder.",
-        "decode_head.",
-        "seg_head.",
-        "segmentation_head.",
-      )
-      state = {k: v for k, v in state.items() if not k.startswith(head_prefixes)}
+      state = _drop_head_keys(state)
     if include_prefixes:
       state = {k: v for k, v in state.items() if k.startswith(include_prefixes)}
 
@@ -475,32 +556,10 @@ def load_state_dict_generic(
   # intentionally drop classifier heads when loading them. For full-model
   # checkpoints (e.g. WSI MIL), callers must set drop_heads=False.
   if drop_heads:
-    head_prefixes = (
-      "fc.",
-      "classifier.",
-      "head.",
-      "last_linear.",
-      # Common decoder-style heads (e.g. segmentation) that we never want when
-      # loading a backbone/tile encoder checkpoint.
-      "decoder.",
-      "decode_head.",
-      "seg_head.",
-      "segmentation_head.",
-    )
-    filtered = {k: v for k, v in state.items() if not k.startswith(head_prefixes)}
+    filtered = _drop_head_keys(state)
   else:
     filtered = dict(state)
 
-  prefixes = (
-    "module.",
-    "model.",
-    "backbone.",
-    "tile_encoder.",
-    "tile_encoder.base_model.",
-    "tile_encoder.base_model.model.",
-    "base_model.",
-    "base_model.model.",
-  )
   stripped: dict[str, torch.Tensor] = {}
   collisions: list[tuple[str, str]] = []
   dropped_lora = 0
@@ -511,7 +570,7 @@ def load_state_dict_generic(
     out_k = key
     while True:
       matched = False
-      for prefix in prefixes:
+      for prefix in _STRIP_PREFIXES:
         if out_k.startswith(prefix):
           out_k = out_k[len(prefix):]
           matched = True
@@ -532,6 +591,10 @@ def load_state_dict_generic(
 
   if include_prefixes:
     stripped = {k: v for k, v in stripped.items() if k.startswith(include_prefixes)}
+
+  # If the model expects wrapper-prefixed keys (e.g. PEFT base_model.model.*),
+  # remap to best match the model before encoder-variant remap.
+  stripped = _remap_wrapper_prefix(stripped, model)
 
   # Same `.encoder.` drift can occur for non-PEFT backbones too (e.g. wrapper refactors).
   stripped = _remap_encoder_variant(stripped, model)
