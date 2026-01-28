@@ -436,9 +436,6 @@ def load_state_dict_generic(
     # Some checkpoints store weights under a full model path; normalize.
     state = _strip_prefix(state, "backbone.tile_encoder.")
     state = _replace_base_layer(state, model=model)
-    if ckpt_prefix:
-      state = {k: v for k, v in state.items() if k.startswith(ckpt_prefix)}
-      state = _strip_prefix(state, ckpt_prefix)
     if exclude_prefixes:
       state = {k: v for k, v in state.items() if not k.startswith(exclude_prefixes)}
     if drop_heads:
