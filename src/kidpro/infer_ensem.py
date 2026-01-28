@@ -31,11 +31,24 @@ def _original_cwd() -> Path:
     return Path.cwd()
 
 
+def _resolve_path(p: str | Path) -> Path:
+  """
+  Resolve a user/config path robustly under Hydra.
+
+  Hydra often changes CWD to a run directory, so we interpret relative paths
+  as relative to the *original* invocation directory.
+  """
+  pp = Path(p).expanduser()
+  if pp.is_absolute():
+    return pp
+  return (_original_cwd() / pp).resolve()
+
+
 def _resolve_fallback_weights(infer: Dict[str, Any]) -> Path:
   fp = infer.get("fallback_weights")
   if fp is None:
     fp = _original_cwd() / "models" / "best_model.pt"
-  fp = Path(fp)
+  fp = _resolve_path(fp)
   if not fp.exists():
     raise FileNotFoundError(
       f"Fallback weights not found at {fp}. "
@@ -48,7 +61,7 @@ def _resolve_weight_path(cfg: AppCfg, infer: Dict[str, Any]) -> Path:
   # Preferred: explicit WSI weights (slide_encoder + classifier).
   wsi_weights_path = infer.get("wsi_weights_path")
   if wsi_weights_path:
-    return Path(wsi_weights_path)
+    return _resolve_path(wsi_weights_path)
 
   # Back-compat: accept weights_paths but take the first.
   paths = infer.get("weights_paths") or []
@@ -56,7 +69,7 @@ def _resolve_weight_path(cfg: AppCfg, infer: Dict[str, Any]) -> Path:
     paths = [paths]
   if paths:
     log.warning("infer_ensem.weights_paths is deprecated; use infer_ensem.wsi_weights_path instead.")
-    return Path(paths[0])
+    return _resolve_path(paths[0])
 
   # NOTE: infer_ensem should not depend on MLflow. If weights aren't provided,
   # fall back to a local checkpoint only.
@@ -196,7 +209,7 @@ def _get_tile_embeddings_from_stream(
 
 
 def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str, Any]) -> Dict[str, Any]:
-  csv_path = Path(infer["csv_path"])
+  csv_path = _resolve_path(str(infer["csv_path"]))
   df = pd.read_csv(csv_path)
 
   slide_id_col = str(infer.get("slide_id_col", "SlideName"))
@@ -255,10 +268,11 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
   if tile_weights_path:
     if not hasattr(model, "tile_encoder"):
       raise TypeError("MIL model missing tile_encoder; cannot load infer_ensem.tile_encoder_weights_path.")
-    log.info("[infer_ensem] loading tile_encoder weights from %s", tile_weights_path)
+    tile_weights_resolved = _resolve_path(tile_weights_path)
+    log.info("[infer_ensem] loading tile_encoder weights from %s", str(tile_weights_resolved))
     model.tile_encoder = load_state_dict_generic(  # type: ignore[attr-defined]
       model.tile_encoder,  # type: ignore[attr-defined]
-      Path(tile_weights_path),
+      tile_weights_resolved,
       drop_heads=True,
     )
 
