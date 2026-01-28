@@ -19,7 +19,7 @@ infer_ensem:
   # split_col: the column used to filter "test" rows for output.
   slide_id_col: SlideName
   gt_col: GT
-  split_col: ID
+  split_col: split
   test_value: test
 
   # If your CSV has a slide image path column, set it here (e.g. "image" or "image_path").
