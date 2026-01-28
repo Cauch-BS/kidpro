@@ -65,6 +65,107 @@ def _has_lora_keys(state: Mapping[str, torch.Tensor]) -> bool:
   return False
 
 
+def _replace_base_layer(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+  """
+  Normalize PEFT/timm LoRA saved keys:
+    - timm LoRA adapters often store weights under `...proj.base_layer.weight`
+      whereas the underlying module expects `...proj.weight`.
+  """
+  return {k.replace(".base_layer.", "."): v for k, v in state.items()}
+
+
+def _remap_encoder_variant(
+  state: Mapping[str, torch.Tensor],
+  model: nn.Module,
+) -> dict[str, torch.Tensor]:
+  """
+  Best-effort remap for a common structural drift between checkpoints and code:
+
+  Some backbones are saved with an extra `.encoder.` segment (or without it),
+  e.g.:
+    - ckpt:  base_model.model.cls_token
+    - model: base_model.model.encoder.cls_token
+
+  We score a small set of candidate transforms against `model.state_dict()` keys
+  and apply the best one only if it significantly improves matches.
+  """
+  state = dict(state)
+  if not state:
+    return state
+
+  try:
+    model_keys = set(model.state_dict().keys())
+  except Exception:
+    # Some wrappers may not expose state_dict reliably; don't remap in that case.
+    return state
+
+  if not model_keys:
+    return state
+
+  def _baseline_matches(keys: list[str]) -> int:
+    return sum(1 for k in keys if k in model_keys)
+
+  rules: list[tuple[str, str]] = [
+    ("base_model.model.", "base_model.model.encoder."),
+    ("model.", "model.encoder."),
+  ]
+
+  def _add_encoder(k: str) -> str:
+    out = k
+    for plain, enc in rules:
+      if plain and out.startswith(plain) and not out.startswith(enc):
+        return enc + out[len(plain):]
+    return out
+
+  def _drop_encoder(k: str) -> str:
+    out = k
+    for plain, enc in rules:
+      if out.startswith(enc):
+        return plain + out[len(enc):]
+    return out
+
+  keys = list(state.keys())
+  base = _baseline_matches(keys)
+  add = _baseline_matches([_add_encoder(k) for k in keys])
+  drop = _baseline_matches([_drop_encoder(k) for k in keys])
+
+  best_name = "identity"
+  best_fn = lambda k: k
+  best = base
+  if add > best:
+    best = add
+    best_name = "add_encoder"
+    best_fn = _add_encoder
+  if drop > best:
+    best = drop
+    best_name = "drop_encoder"
+    best_fn = _drop_encoder
+
+  # Require a meaningful improvement; avoid flapping on tiny diffs.
+  # Absolute threshold handles small models; relative threshold handles large.
+  improve = best - base
+  if best_name == "identity" or (improve < 32 and improve < int(0.05 * max(1, base))):
+    return state
+
+  remapped: dict[str, torch.Tensor] = {}
+  collisions: list[tuple[str, str]] = []
+  for k, v in state.items():
+    kk = best_fn(k)
+    if kk in remapped and remapped[kk] is not v:
+      collisions.append((kk, k))
+    remapped[kk] = v
+
+  if collisions:
+    raise RuntimeError(
+      "Key collision(s) after encoder remap, e.g. "
+      + ", ".join([f"{out_k} <- {src}" for out_k, src in collisions[:5]])
+      + (" ..." if len(collisions) > 5 else "")
+    )
+
+  log.info("[FND CKPT] key_remap=%s matched=%d->%d", best_name, base, best)
+  return remapped
+
+
 def load_state_dict_generic(
   model: nn.Module,
   ckpt_path: Path,
@@ -140,6 +241,7 @@ def load_state_dict_generic(
   if has_lora and callable(getattr(model, "merge_and_unload", None)):
     # Some checkpoints store weights under a full model path; normalize.
     state = _strip_prefix(state, "backbone.tile_encoder.")
+    state = _replace_base_layer(state)
     if ckpt_prefix:
       state = {k: v for k, v in state.items() if k.startswith(ckpt_prefix)}
       state = _strip_prefix(state, ckpt_prefix)
@@ -160,6 +262,10 @@ def load_state_dict_generic(
       state = {k: v for k, v in state.items() if not k.startswith(head_prefixes)}
     if include_prefixes:
       state = {k: v for k, v in state.items() if k.startswith(include_prefixes)}
+
+    # Handle common `.encoder.` vs no-`.encoder.` drift for PEFT-wrapped models.
+    state = _remap_encoder_variant(state, model)
+
     missing, unexpected = model.load_state_dict(state, strict=False)
     merged = model.merge_and_unload()  # type: ignore[operator]
     if merged is None:
@@ -235,6 +341,9 @@ def load_state_dict_generic(
 
   if include_prefixes:
     stripped = {k: v for k, v in stripped.items() if k.startswith(include_prefixes)}
+
+  # Same `.encoder.` drift can occur for non-PEFT backbones too (e.g. wrapper refactors).
+  stripped = _remap_encoder_variant(stripped, model)
 
   if collisions:
     raise RuntimeError(
