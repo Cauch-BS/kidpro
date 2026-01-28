@@ -408,6 +408,7 @@ class InferenceCfg(BaseModel):
   output_dir: Optional[Path] = None
   output_json: str = "prediction.json"
   tile_size: Optional[int] = None
+  batch_size: int = Field(default=64, ge=1)
   cleanup_tiles: bool = False
   preprocess: PreprocessCfg = Field(default_factory=PreprocessCfg)
   fallback_weights: Optional[Path] = None

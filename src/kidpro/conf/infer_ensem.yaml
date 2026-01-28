@@ -1,0 +1,47 @@
+defaults:
+  - hydra: default
+  - model: prov_gigapath
+  - train: default_wsi
+  - dataset: wsi
+  - mlflow: default_wsi
+  - core: default
+  - _self_
+
+# CSV inference + optional checkpoint ensembling.
+infer_ensem:
+  # --- Input / output ---
+  csv_path: /path/to/label_or_split.csv
+  output_dir: ${hydra:run.dir}
+  output_csv: submission.csv
+
+  # --- Column mapping ---
+  # slide_id_col: the column that contains the slide identifier (used to resolve paths + output ID).
+  # split_col: the column used to filter "test" rows for output.
+  slide_id_col: SlideName
+  gt_col: GT
+  split_col: ID
+  test_value: test
+
+  # If your CSV has a slide image path column, set it here (e.g. "image" or "image_path").
+  # If null, slides are resolved from dataset.paths.wsi_dir + dataset.paths.wsi_ext.
+  wsi_path_col: null
+
+  # --- WSI / tile settings ---
+  tile_size: null          # defaults to dataset.data.patch_size
+  level: 0
+  tiles_key: tiles
+  ensure_cache: false      # if true, create wsidata caches when missing
+  cache_dir: null          # override cache dir for wsidata .zarr (otherwise dataset.paths.wsi_cache_dir)
+  overwrite_cache: false
+
+  # --- Inference settings ---
+  batch_size: 64
+  threshold: 0.5
+  amp: auto                # auto|true|false
+
+  # --- Weights / ensembling ---
+  # If weights_paths is empty:
+  # - if mlflow.enabled=true, uses the best model from registry
+  # - else falls back to models/best_model.pt (repo-relative)
+  weights_paths: []
+  share_tile_encoder: true # if true, encode tiles once and reuse for all ensemble members
