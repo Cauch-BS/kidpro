@@ -10,7 +10,9 @@ defaults:
 # CSV inference using cached MIL embeddings.
 infer_ensem:
   # --- Input / output ---
-  csv_path: /home/khdp-user/workspace/dataset/CSV/GT_label.csv
+  # Default to the dataset's label CSV so paths stay consistent with `dataset=wsi`
+  # (override on the CLI if you want a different CSV).
+  csv_path: ${dataset.paths.label_csv}
   output_dir: ${hydra:run.dir}
   output_csv: submission.csv
 

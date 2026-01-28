@@ -130,8 +130,82 @@ def _roc_auc_binary(y_true: Sequence[int], y_score: Sequence[float]) -> float:
   except Exception:
     return float("nan")
 
+def _is_skippable_tile_error(exc: BaseException) -> bool:
+  """
+  Mimic MIL training behavior: tile/slide read issues are skippable.
 
-def run_csv_ensem_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str, Any]) -> Dict[str, Any]:
+  See: `kidpro/training/loop_mil.py::_is_skippable_tile_error`
+  """
+  msg = str(exc).lower()
+  return (
+    "no tiles available" in msg
+    or "empty tile stream" in msg
+    or "too many unreadable tiles" in msg
+    # Additional common failure modes from wsidata/OpenSlide paths
+    or "exceeded max errors" in msg
+    or "missing wsidata cache for slide" in msg
+    or "openslide" in msg
+  )
+
+
+@torch.no_grad()
+def _get_tile_embeddings_from_stream(
+  *,
+  model: Any,
+  tile_stream: Any,
+  device: str,
+  use_amp: bool,
+  chunk_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+  """
+  Compute tile embeddings on cache-miss, mirroring the training pipeline:
+  - stream tiles in chunks
+  - run tile encoder
+  - cache embeddings back into the tile_stream (if supported)
+  """
+  if not hasattr(tile_stream, "iter_batches"):
+    raise ValueError("Expected a tile stream with iter_batches().")
+
+  encode_tiles = getattr(model, "encode_tiles", None)
+  tile_encoder = getattr(model, "tile_encoder", None)
+  if not callable(encode_tiles) and tile_encoder is None:
+    raise TypeError("MIL model must expose encode_tiles() or tile_encoder to compute embeddings.")
+
+  feats_list: list[torch.Tensor] = []
+  coords_list: list[torch.Tensor] = []
+  tile_count = 0
+
+  for tiles, coords in tile_stream.iter_batches(int(chunk_size)):
+    tiles = tiles.to(device, non_blocking=True)
+    coords = coords.to(device, non_blocking=True)
+    tile_count += int(tiles.size(0))
+
+    if use_amp:
+      with torch.autocast(device_type="cuda"):
+        feats = encode_tiles(tiles) if callable(encode_tiles) else tile_encoder(tiles)  # type: ignore[misc]
+    else:
+      feats = encode_tiles(tiles) if callable(encode_tiles) else tile_encoder(tiles)  # type: ignore[misc]
+
+    feats_list.append(feats)
+    coords_list.append(coords)
+
+  if tile_count == 0:
+    log.warning("Empty tile stream for slide.")
+    return torch.tensor([]), torch.tensor([])
+
+  feats_all = torch.cat(feats_list, dim=0)
+  coords_all = torch.cat(coords_list, dim=0)
+
+  if hasattr(tile_stream, "set_cached_tile_embeddings"):
+    tile_stream.set_cached_tile_embeddings(
+      feats_all.detach().cpu().numpy(),
+      coords_all.detach().cpu().numpy(),
+    )
+
+  return feats_all, coords_all
+
+
+def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str, Any]) -> Dict[str, Any]:
   csv_path = Path(infer["csv_path"])
   df = pd.read_csv(csv_path)
 
@@ -196,7 +270,9 @@ def run_csv_ensem_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str, A
 
   processed = 0
   cache_miss = 0
+  skipped = 0
   failed = 0
+  skipped_slides: set[str] = set()
 
   pbar = tqdm(range(len(df)), desc="[infer_ensem]", unit="slide")
   for idx in pbar:
@@ -216,12 +292,20 @@ def run_csv_ensem_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str, A
             "(the training loop writes caches on cache-miss), or set "
             "infer_ensem.require_cached_embeddings=false."
           )
-        # If we ever support fallback, it would go here.
-        continue
-
-      emb_np, coords_np = cached
-      feats = torch.from_numpy(np.asarray(emb_np, dtype=np.float32))
-      coords = torch.from_numpy(np.asarray(coords_np, dtype=np.float32))
+        # Mimic training: compute embeddings on cache-miss (and cache them).
+        feats_d, coords_d = _get_tile_embeddings_from_stream(
+          model=model,
+          tile_stream=tile_stream,
+          device=rr.device,
+          use_amp=use_amp,
+          chunk_size=int(cfg.dataset.data.mil_cache.chunk_size),
+        )
+        feats = feats_d.detach().to("cpu")
+        coords = coords_d.detach().to("cpu")
+      else:
+        emb_np, coords_np = cached
+        feats = torch.from_numpy(np.asarray(emb_np, dtype=np.float32))
+        coords = torch.from_numpy(np.asarray(coords_np, dtype=np.float32))
 
       probs = _predict_probs_from_feats(model=model, device=rr.device, feats=feats, coords=coords, use_amp=use_amp)
 
@@ -230,10 +314,23 @@ def run_csv_ensem_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str, A
       # Keep threshold for downstream consumers; for binary, this can override argmax if desired.
       if probs.numel() == 2:
         pred = int(pred_prob >= threshold)
+    except RuntimeError as exc:
+      # Mirror training pipeline: warn and skip skippable tile/slide read errors.
+      if _is_skippable_tile_error(exc):
+        skipped += 1
+        if slide_id not in skipped_slides:
+          log.warning("[infer_ensem] skipping slide=%s: %s", slide_id, exc)
+          skipped_slides.add(slide_id)
+        pbar.set_postfix(processed=processed, cache_miss=cache_miss, skipped=skipped, failed=failed)
+        continue
+      failed += 1
+      log.error("[infer_ensem] slide=%s failed: %s", slide_id, exc, exc_info=True)
+      pbar.set_postfix(processed=processed, cache_miss=cache_miss, skipped=skipped, failed=failed)
+      continue
     except Exception as exc:
       failed += 1
       log.error("[infer_ensem] slide=%s failed: %s", slide_id, exc, exc_info=True)
-      pbar.set_postfix(processed=processed, cache_miss=cache_miss, failed=failed)
+      pbar.set_postfix(processed=processed, cache_miss=cache_miss, skipped=skipped, failed=failed)
       continue
 
     gt_val = None
@@ -254,7 +351,7 @@ def run_csv_ensem_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str, A
       }
     )
     processed += 1
-    pbar.set_postfix(processed=processed, cache_miss=cache_miss, failed=failed)
+    pbar.set_postfix(processed=processed, cache_miss=cache_miss, skipped=skipped, failed=failed)
 
   # Metrics on rows with GT
   if y_true:
@@ -286,6 +383,8 @@ def run_csv_ensem_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str, A
     "require_cached_embeddings": require_cached,
     "processed": processed,
     "cache_miss": cache_miss,
+    "skipped": skipped,
+    "failed": failed,
   }
   with open(output_dir / "metrics.json", "w") as f:
     json.dump(result, f, indent=2)
@@ -301,7 +400,7 @@ def main(hcfg: DictConfig) -> None:
   if "csv_path" not in infer:
     raise ValueError("Missing infer_ensem.csv_path in config.")
 
-  run_csv_ensem_inference(cfg, rr, infer)
+  run_csv_ensemble_inference(cfg, rr, infer)
 
 
 if __name__ == "__main__":

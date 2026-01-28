@@ -192,3 +192,6 @@ pyrightconfig.json
 
 # Mac Development
 *.DS_Store
+
+# other
+.vendor/
