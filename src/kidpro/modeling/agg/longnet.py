@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Any, Callable, Union, cast
 import torch
 import torch.nn as nn
 
-from ...torchscale.model.LongNet import make_longnet_from_name
+from kidpro.modeling.torchscale_longnet import make_longnet_from_name
+
 from ...utils.pos_embed import get_2d_sincos_pos_embed
 from .simple import SimpleAggregator
 
