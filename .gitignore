@@ -195,3 +195,9 @@ pyrightconfig.json
 
 # other
 .vendor/
+
+# ignore models for now
+*.pt
+*.pth 
+*.bin 
+*.safetensors

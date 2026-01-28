@@ -40,7 +40,7 @@ infer_ensem:
   # --- Weights ---
   # WSI checkpoint containing slide_encoder + classifier weights.
   # If null, falls back to models/best_model.pt (repo-relative).
-  wsi_weights_path: null
+  wsi_weights_path: models/slide_encoder.pt 
   # Optional: tile-encoder checkpoint path (loaded into model.tile_encoder).
   # If null, the foundation/default weights from `model.weights` are used.
-  tile_encoder_weights_path: null
+  tile_encoder_weights_path: models/tile_encoder.pth
