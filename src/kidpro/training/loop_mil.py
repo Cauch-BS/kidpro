@@ -277,6 +277,9 @@ def _get_tile_embeddings(
     feats_np, coords_np = cached_tile_emb
     cache_hit = True
     feats_all = torch.from_numpy(feats_np).to(rr.device)
+    # Ensure cached embeddings require gradients for aggregator training
+    # (even if tile encoder is frozen, aggregator still needs gradients)
+    feats_all.requires_grad_(True)
     coords_all = torch.from_numpy(coords_np).to(rr.device)
     tile_count = feats_all.shape[0]
   else:
@@ -630,6 +633,7 @@ def fit_mil(
   skipped_train_slides: set[str] = set()
   skipped_val_slides: set[str] = set()
   skipped_eval_slides: set[str] = set()
+  missing_grad_warning_logged = False
 
   # For sanity check mode, limit epochs
   epochs = 1 if cfg.train.sanity_check else cfg.train.epochs
@@ -799,21 +803,47 @@ def fit_mil(
 
       loss_mean = loss_sum / float(n_effective)
 
+      has_grad = False
       if use_amp and scaler is not None:
         scaler.scale(loss_mean).backward()
         if gradient_clip > 0:
           scaler.unscale_(optimizer)
           torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
-        scaler.step(optimizer)
-        scaler.update()
+        has_grad = any(
+          param.grad is not None
+          for group in optimizer.param_groups
+          for param in group.get("params", [])
+        )
+        if has_grad:
+          scaler.step(optimizer)
+          scaler.update()
+        elif not missing_grad_warning_logged:
+          log.warning(
+            "[TRAINING] No gradients found for optimizer parameters; skipping optimizer step. "
+            "Check that trainable params are enabled (e.g., LoRA target modules or unfreezing)."
+          )
+
+          missing_grad_warning_logged = True
       else:
         loss_mean.backward()
         if gradient_clip > 0:
           torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
-        optimizer.step()
+        has_grad = any(
+          param.grad is not None
+          for group in optimizer.param_groups
+          for param in group.get("params", [])
+        )
+        if has_grad:
+          optimizer.step()
+        elif not missing_grad_warning_logged:
+          log.warning(
+            "[TRAINING] No gradients found for optimizer parameters; skipping optimizer step. "
+            "Check that trainable params are enabled (e.g., LoRA target modules or unfreezing)."
+          )
+          missing_grad_warning_logged = True
 
       # Step scheduler per batch
-      if scheduler is not None:
+      if scheduler is not None and has_grad:
         scheduler.step()
 
       train_losses.append(float(loss_mean.item()))

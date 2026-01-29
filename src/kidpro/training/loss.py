@@ -124,30 +124,42 @@ def compute_dsmil_loss(
   """
   criterion = nn.BCEWithLogitsLoss()
 
-  # Bag loss
+  # Prepare target for bag loss
   if num_classes == 1:
-    bag_loss = criterion(bag_prediction.view(1, -1), target.view(1, -1))
+    target_bag = target.view(1, -1)
   else:
-    # For multi-class, use BCEWithLogitsLoss with one-hot encoding
+    # Multi-class case
     if target.ndim == 1:
-      # Convert to one-hot if needed
-      target_onehot = torch.zeros_like(bag_prediction)
-      target_onehot[0, int(target.item())] = 1.0
-      target = target_onehot
-    bag_loss = criterion(bag_prediction.view(1, -1), target.view(1, -1))
+      # Convert 1D target to one-hot: (1,) -> (1, num_classes)
+      target_bag = torch.zeros_like(bag_prediction)
+      target_class_idx = int(target.item())
+      target_bag[0, target_class_idx] = 1.0
+    else:
+      # Already 2D: (1, num_classes) - use as-is (handles RankMix soft labels)
+      target_bag = target if target.shape[0] == 1 else target.view(1, -1)
+
+  # Prepare target for max instance loss
+  if num_classes == 1:
+    target_max = target.view(1, -1)
+  else:
+    # Multi-class case
+    if target.ndim == 1:
+      # Convert 1D target to one-hot: (1,) -> (num_classes,)
+      target_max_onehot = torch.zeros(num_classes, device=target.device, dtype=bag_prediction.dtype)
+      target_class_idx = int(target.item())
+      target_max_onehot[target_class_idx] = 1.0
+      target_max = target_max_onehot.view(1, -1)
+    else:
+      # Already 2D: (1, num_classes) - extract first row for max loss
+      # For RankMix, this preserves soft label values
+      target_max = target[0:1, :] if target.shape[0] == 1 else target.view(1, -1)
+
+  # Bag loss
+  bag_loss = criterion(bag_prediction.view(1, -1), target_bag.view(1, -1))
 
   # Max instance loss
-  if num_classes == 1:
-    max_prediction, _ = torch.max(instance_predictions, dim=0)
-    max_loss = criterion(max_prediction.view(1, -1), target.view(1, -1))
-  else:
-    # For multi-class, take max over instances for each class
-    max_prediction, _ = torch.max(instance_predictions, dim=0)  # (num_classes,)
-    if target.ndim == 1:
-      target_onehot = torch.zeros_like(max_prediction)
-      target_onehot[int(target.item())] = 1.0
-      target = target_onehot
-    max_loss = criterion(max_prediction.view(1, -1), target.view(1, -1))
+  max_prediction, _ = torch.max(instance_predictions, dim=0)  # (num_classes,)
+  max_loss = criterion(max_prediction.view(1, -1), target_max.view(1, -1))
 
   loss = 0.5 * bag_loss + 0.5 * max_loss
   return cast(Tensor, loss)
