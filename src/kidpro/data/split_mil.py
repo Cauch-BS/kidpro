@@ -75,16 +75,21 @@ def build_mil_split_csv(
     if (val_ratio + test_ratio) <= 0:
         raise ValueError("val_ratio + test_ratio must be > 0.")
 
-    val_frac_of_temp = val_ratio / (val_ratio + test_ratio)
-    stratify_temp = temp_df[gt_col] if temp_df[gt_col].nunique() > 1 else None
+    # If test_ratio = 0, assign all of temp_df to validation
+    if test_ratio == 0:
+        val_df = temp_df.copy()
+        test_df = pd.DataFrame(columns=temp_df.columns)  # Empty DataFrame with same columns
+    else:
+        val_frac_of_temp = val_ratio / (val_ratio + test_ratio)
+        stratify_temp = temp_df[gt_col] if temp_df[gt_col].nunique() > 1 else None
 
-    val_df, test_df = train_test_split(
-        temp_df,
-        test_size=(1.0 - val_frac_of_temp),
-        random_state=random_state,
-        shuffle=True,
-        stratify=stratify_temp,
-    )
+        val_df, test_df = train_test_split(
+            temp_df,
+            test_size=(1.0 - val_frac_of_temp),
+            random_state=random_state,
+            shuffle=True,
+            stratify=stratify_temp,
+        )
 
     # assign split column
     out = df[[slide_col, gt_col]].copy()
