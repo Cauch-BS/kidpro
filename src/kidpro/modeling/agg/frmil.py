@@ -473,10 +473,14 @@ class FRMILMIL(MILTemplate):
         return scores # type: ignore[no-any-return]
 
     def forward_with_aux(
-        self, x: torch.Tensor, coords: torch.Tensor | None = None
+        self, feats: torch.Tensor, coords: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass that also returns auxiliary outputs for loss computation.
+
+        Args:
+            feats: Tile embeddings of shape (num_tiles, in_dim) - already encoded features
+            coords: Tile coordinates (ignored for FRMIL)
 
         Returns:
             Tuple of (bag_prediction, query_features, instance_predictions):
@@ -484,7 +488,7 @@ class FRMILMIL(MILTemplate):
             - query_features: Shape (num_tiles, in_dim) - shifted features
             - instance_predictions: Shape (num_tiles,) - attention scores
         """
-        feats = self.encode_tiles(x)
+        # feats are already tile embeddings, no need to encode
         feats_batch = feats.unsqueeze(0)  # (1, num_tiles, in_dim)
 
         A1, Q = self.recalib(feats_batch, "max")

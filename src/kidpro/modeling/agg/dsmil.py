@@ -339,15 +339,19 @@ class DSMILMIL(MILTemplate):
         return classes # type: ignore[no-any-return]
 
     def forward_with_attention(
-        self, x: torch.Tensor, coords: torch.Tensor | None = None
+        self, feats: torch.Tensor, coords: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Forward pass that also returns intermediate outputs for loss computation.
 
+        Args:
+            feats: Tile embeddings of shape (num_tiles, feat_dim) - already encoded features
+            coords: Tile coordinates (ignored for DSMIL)
+
         Returns:
             Tuple of (instance_predictions, bag_prediction, attention_weights, bag_representation)
         """
-        feats = self.encode_tiles(x)
+        # feats are already tile embeddings, no need to encode
         feats_processed, classes = self.i_classifier(feats)
         bag_pred, attention, bag_repr = self.b_classifier(feats_processed, classes)
         return classes, bag_pred, attention, bag_repr
