@@ -237,8 +237,8 @@ class DataCfg(BaseModel):
       raise ValueError("data.patch_size must be > 0.")
     if not (0.0 < self.train_ratio < 1.0):
       raise ValueError("data.train_ratio must be in (0,1).")
-    if not (0.0 < self.test_ratio < 1.0):
-      raise ValueError("data.test_ratio must be in (0, 1).")
+    if not (0.0 <= self.test_ratio < 1.0):
+      raise ValueError("data.test_ratio must be in [0, 1).")
     if not (0.0 <= self.val_ratio < 1.0):
       raise ValueError("data.val_ratio must be in [0, 1).")
     if abs(self.train_ratio + self.test_ratio + self.val_ratio - 1) >= 1e-6:
