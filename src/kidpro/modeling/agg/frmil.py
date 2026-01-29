@@ -96,6 +96,30 @@ class MAB(nn.Module):
             return O.squeeze(1)
 
 
+class FRMILSlideEncoder(nn.Module):
+    """Wrapper module containing FRMIL's slide aggregation components.
+
+    This module wraps the components that aggregate tile embeddings into slide-level
+    representations: encoder for recalibration, CNN position learning, and self-attention
+    block. The CLS token is kept as a direct parameter of FRMILMIL (not wrapped) since
+    it's a nn.Parameter and is already registered with the parent module.
+
+    Used for compatibility with training code that accesses model.slide_encoder for
+    LoRA application and parameter grouping.
+    """
+
+    def __init__(
+        self,
+        enc: nn.Module,
+        conv_head: nn.Module,
+        selt_att: nn.Module,
+    ):
+        super().__init__()
+        self.enc = enc
+        self.conv_head = conv_head
+        self.selt_att = selt_att
+
+
 class FRMILAggregator(nn.Module):
     """FRMIL aggregator module (for compatibility with SlideEncoderBackbone)."""
 
@@ -306,6 +330,16 @@ class FRMILMIL(MILTemplate):
 
         # Self-attention
         self.selt_att = MAB(in_dim, in_dim, num_heads)
+
+        # Slide encoder wrapper (for compatibility with training code that accesses model.slide_encoder)
+        # This wraps the components that aggregate tiles into slide-level representations.
+        # Note: cls_token is kept as a direct parameter (not wrapped) since it's a nn.Parameter.
+        # The training code uses this for LoRA and parameter grouping.
+        self.slide_encoder = FRMILSlideEncoder(
+            enc=self.enc,
+            conv_head=self.conv_head,
+            selt_att=self.selt_att,
+        )
 
         # Final classifier
         self.classifier = nn.Sequential(nn.Linear(in_dim, num_classes))

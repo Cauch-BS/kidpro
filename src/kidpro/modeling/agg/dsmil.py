@@ -151,6 +151,21 @@ class BClassifier(nn.Module):
         return C, A, B
 
 
+class DSMILSlideEncoder(nn.Module):
+    """Wrapper module containing DSMIL's instance and bag classifiers.
+
+    This module wraps both the instance classifier and bag classifier since they
+    work together to aggregate tile embeddings into slide-level representations.
+    Used for compatibility with training code that accesses model.slide_encoder
+    for LoRA application and parameter grouping.
+    """
+
+    def __init__(self, i_classifier: nn.Module, b_classifier: nn.Module):
+        super().__init__()
+        self.i_classifier = i_classifier
+        self.b_classifier = b_classifier
+
+
 class DSMILAggregator(nn.Module):
     """DSMIL aggregator module (for compatibility with SlideEncoderBackbone)."""
 
@@ -261,6 +276,11 @@ class DSMILMIL(MILTemplate):
         self.b_classifier = BClassifier(
             input_size=in_dim, output_class=num_classes, dropout_v=dropout_node
         )
+
+        # Slide encoder wrapper (for compatibility with training code that accesses model.slide_encoder)
+        # This wraps both i_classifier and b_classifier since they work together to aggregate tiles
+        # into slide-level representations. The training code uses this for LoRA and parameter grouping.
+        self.slide_encoder = DSMILSlideEncoder(self.i_classifier, self.b_classifier)
 
         # Final classifier (maps bag representation to logits)
         # Note: BClassifier already outputs class logits, but we keep this for consistency
