@@ -65,19 +65,60 @@ class MAB(nn.Module):
             If inst_mode: Output of shape (batch, num_queries, dim_V)
             If not inst_mode: Output of shape (batch, dim_V)
         """
-        # Handle 2D input (batch, dim) -> (batch, 1, dim)
-        if Q.ndim == 2:
-            Q = Q.unsqueeze(1)
-        if K.ndim == 2:
-            K = K.unsqueeze(1)
+        # Ensure inputs are 3D
+        if Q.ndim == 1:
+            Q = Q.unsqueeze(0).unsqueeze(1)  # (1, 1, dim_Q)
+        elif Q.ndim == 2:
+            Q = Q.unsqueeze(1)  # (batch, 1, dim_Q)
+        elif Q.ndim == 4:
+            if Q.shape[0] == 1:
+                Q = Q.squeeze(0)
+            else:
+                raise RuntimeError(f"Unexpected 4D Q shape: {Q.shape}")
+
+        if K.ndim == 1:
+            K = K.unsqueeze(0).unsqueeze(1)  # (1, 1, dim_Q)
+        elif K.ndim == 2:
+            K = K.unsqueeze(1)  # (batch, 1, dim_Q)
+        elif K.ndim == 4:
+            if K.shape[0] == 1:
+                K = K.squeeze(0)
+            else:
+                raise RuntimeError(f"Unexpected 4D K shape: {K.shape}")
+
+        # Both must be 3D now
+        if Q.ndim != 3 or K.ndim != 3:
+            raise RuntimeError(f"Q and K must be 3D after shape handling. Q: {Q.shape}, K: {K.shape}")
 
         Q = self.fc_q(Q)
         K, V = self.fc_k(K), self.fc_v(K)
 
+        # Verify Q, K, V are still 3D after linear layers
+        if Q.ndim != 3 or K.ndim != 3 or V.ndim != 3:
+            raise RuntimeError(f"After linear layers, tensors must be 3D. Q: {Q.shape}, K: {K.shape}, V: {V.shape}")
+
         dim_split = self.dim_V // self.num_heads
-        Q_ = torch.cat(Q.split(dim_split, 2), 0)
-        K_ = torch.cat(K.split(dim_split, 2), 0)
-        V_ = torch.cat(V.split(dim_split, 2), 0)
+        if dim_split == 0:
+            raise RuntimeError(f"dim_split is 0: dim_V={self.dim_V}, num_heads={self.num_heads}")
+        if Q.shape[2] % dim_split != 0:
+            raise RuntimeError(f"Q.shape[2] ({Q.shape[2]}) must be divisible by dim_split ({dim_split})")
+
+        # Split along dimension 2 and concatenate along dimension 0 for multi-head
+        Q_split = Q.split(dim_split, 2)
+        K_split = K.split(dim_split, 2)
+        V_split = V.split(dim_split, 2)
+
+        # Verify splits are 3D
+        if any(t.ndim != 3 for t in Q_split) or any(t.ndim != 3 for t in K_split) or any(t.ndim != 3 for t in V_split):
+            raise RuntimeError(f"Split tensors must be 3D. Q_split[0]: {Q_split[0].shape if Q_split else 'empty'}, K_split[0]: {K_split[0].shape if K_split else 'empty'}")
+
+        Q_ = torch.cat(Q_split, 0)
+        K_ = torch.cat(K_split, 0)
+        V_ = torch.cat(V_split, 0)
+
+        # Verify Q_, K_, V_ are 3D
+        if Q_.ndim != 3 or K_.ndim != 3 or V_.ndim != 3:
+            raise RuntimeError(f"After concatenation, tensors must be 3D. Q_: {Q_.shape}, K_: {K_.shape}, V_: {V_.shape}")
 
         A = torch.softmax(Q_.bmm(K_.transpose(1, 2)) / math.sqrt(self.dim_V), 2)
         O = torch.cat((Q_ + A.bmm(V_)).split(Q.size(0), 0), 2)
@@ -203,12 +244,20 @@ class FRMILAggregator(nn.Module):
             _, m_indices = torch.sort(a1, 0, descending=True)
 
             feat_q = []
-            len_i = m_indices.shape[0] - 1
-            for i_q in range(self.k):
+            num_instances = m_indices.shape[0]
+            len_i = num_instances - 1
+            # Ensure k doesn't exceed number of instances
+            k_actual = min(self.k, num_instances)
+            for i_q in range(k_actual):
                 if option == "max":
-                    feats = torch.index_select(inputs[i], dim=0, index=m_indices[i_q, :])
+                    # Extract scalar index and ensure it's a 1D tensor
+                    idx = m_indices[i_q, 0] if m_indices.ndim == 2 else m_indices[i_q]
+                    idx_tensor = idx.unsqueeze(0) if idx.ndim == 0 else idx
+                    feats = torch.index_select(inputs[i], dim=0, index=idx_tensor)
                 else:
-                    feats = torch.index_select(inputs[i], dim=0, index=m_indices[len_i - i_q, :])
+                    idx = m_indices[len_i - i_q, 0] if m_indices.ndim == 2 else m_indices[len_i - i_q]
+                    idx_tensor = idx.unsqueeze(0) if idx.ndim == 0 else idx
+                    feats = torch.index_select(inputs[i], dim=0, index=idx_tensor)
                 feat_q.append(feats)
 
             feats = torch.stack(feat_q)  # (k, in_dim)
@@ -272,14 +321,53 @@ class FRMILAggregator(nn.Module):
 
         # CLS token
         B = x.shape[0]
+        # Ensure x is 3D before concatenation
+        if x.ndim == 2:
+            x = x.unsqueeze(0)
+            B = 1
+        elif x.ndim == 4:
+            if x.shape[0] == 1:
+                x = x.squeeze(0)
+            else:
+                raise RuntimeError(f"Unexpected 4D x shape: {x.shape}")
+
         cls_tokens = self.cls_token.expand(B, -1, -1)
         x = torch.cat((cls_tokens, x), dim=1)  # (batch, 1+_H*_W, in_dim)
 
         # CNN Position Learning
         cls_token, feat_token = x[:, 0], x[:, 1:]  # (batch, in_dim), (batch, _H*_W, in_dim)
+        # Get actual sequence length and recompute _H, _W to match exactly
+        actual_seq_len = feat_token.shape[1]
+        _H = int(np.ceil(np.sqrt(actual_seq_len)))
+        _W = _H
+        target_len = _H * _W
+
+        # Pad or truncate to match target length exactly
+        if actual_seq_len < target_len:
+            pad_needed = target_len - actual_seq_len
+            padding = feat_token[:, :pad_needed, :]
+            feat_token = torch.cat([feat_token, padding], dim=1)
+        elif actual_seq_len > target_len:
+            feat_token = feat_token[:, :target_len, :]
+
         cnn_feat = feat_token.transpose(1, 2).view(B, self.in_dim, _H, _W)
         cnn_feat = self.conv_head(cnn_feat) + cnn_feat
         x = cnn_feat.flatten(2).transpose(1, 2)  # (batch, _H*_W, in_dim)
+
+        # Ensure cls_token is 2D and x is 3D before concatenation
+        if cls_token.ndim == 1:
+            cls_token = cls_token.unsqueeze(0)  # (1, in_dim)
+        elif cls_token.ndim == 3:
+            cls_token = cls_token.squeeze(1) if cls_token.shape[1] == 1 else cls_token.view(cls_token.shape[0], -1)
+
+        if x.ndim == 2:
+            x = x.unsqueeze(0)
+        elif x.ndim == 4:
+            if x.shape[0] == 1:
+                x = x.squeeze(0)
+            else:
+                raise RuntimeError(f"Unexpected 4D x shape: {x.shape}")
+
         x = torch.cat((cls_token.unsqueeze(1), x), dim=1)  # (batch, 1+_H*_W, in_dim)
 
         # Bag pooling with critical feature
@@ -374,12 +462,20 @@ class FRMILMIL(MILTemplate):
             _, m_indices = torch.sort(a1, 0, descending=True)
 
             feat_q = []
-            len_i = m_indices.shape[0] - 1
-            for i_q in range(self.k):
+            num_instances = m_indices.shape[0]
+            len_i = num_instances - 1
+            # Ensure k doesn't exceed number of instances
+            k_actual = min(self.k, num_instances)
+            for i_q in range(k_actual):
                 if option == "max":
-                    feats = torch.index_select(inputs[i], dim=0, index=m_indices[i_q, :])
+                    # Extract scalar index and ensure it's a 1D tensor
+                    idx = m_indices[i_q, 0] if m_indices.ndim == 2 else m_indices[i_q]
+                    idx_tensor = idx.unsqueeze(0) if idx.ndim == 0 else idx
+                    feats = torch.index_select(inputs[i], dim=0, index=idx_tensor)
                 else:
-                    feats = torch.index_select(inputs[i], dim=0, index=m_indices[len_i - i_q, :])
+                    idx = m_indices[len_i - i_q, 0] if m_indices.ndim == 2 else m_indices[len_i - i_q]
+                    idx_tensor = idx.unsqueeze(0) if idx.ndim == 0 else idx
+                    feats = torch.index_select(inputs[i], dim=0, index=idx_tensor)
                 feat_q.append(feats)
 
             feats = torch.stack(feat_q)
@@ -410,7 +506,7 @@ class FRMILMIL(MILTemplate):
         # Add batch dimension
         feats_batch = feats.unsqueeze(0)  # (1, num_tiles, feat_dim)
 
-        A1, Q = self.recalib(feats_batch, "max")
+        _, Q = self.recalib(feats_batch, "max")
 
         # Shift features (always enabled)
         Q_expanded = Q.unsqueeze(1)  # (1, 1, in_dim)
@@ -427,15 +523,54 @@ class FRMILMIL(MILTemplate):
 
         # CLS token
         B = feats_batch.shape[0]
+        # Ensure feats_batch is 3D before concatenation
+        if feats_batch.ndim == 2:
+            feats_batch = feats_batch.unsqueeze(0)
+            B = 1
+        elif feats_batch.ndim == 4:
+            if feats_batch.shape[0] == 1:
+                feats_batch = feats_batch.squeeze(0)
+            else:
+                raise RuntimeError(f"Unexpected 4D feats_batch shape: {feats_batch.shape}")
+
         cls_tokens = self.cls_token.expand(B, -1, -1)
         feats_batch = torch.cat((cls_tokens, feats_batch), dim=1)
 
         # CNN Position Learning
         cls_token, feat_token = feats_batch[:, 0], feats_batch[:, 1:]
+        # Get actual sequence length and recompute _H, _W to match exactly (same fix as forward_with_aux)
+        actual_seq_len = feat_token.shape[1]
+        _H = int(np.ceil(np.sqrt(actual_seq_len)))
+        _W = _H
+        target_len = _H * _W
+
+        # Pad or truncate to match target length exactly
+        if actual_seq_len < target_len:
+            pad_needed = target_len - actual_seq_len
+            padding = feat_token[:, :pad_needed, :]
+            feat_token = torch.cat([feat_token, padding], dim=1)
+        elif actual_seq_len > target_len:
+            feat_token = feat_token[:, :target_len, :]
+
         cnn_feat = feat_token.transpose(1, 2).view(B, self.in_dim, _H, _W)
         cnn_feat = self.conv_head(cnn_feat) + cnn_feat
-        x = cnn_feat.flatten(2).transpose(1, 2)
-        x = torch.cat((cls_token.unsqueeze(1), x), dim=1)
+        x = cnn_feat.flatten(2).transpose(1, 2)  # (batch, _H*_W, in_dim)
+
+        # Ensure cls_token is 2D and x is 3D before concatenation
+        if cls_token.ndim == 1:
+            cls_token = cls_token.unsqueeze(0)  # (1, in_dim)
+        elif cls_token.ndim == 3:
+            cls_token = cls_token.squeeze(1) if cls_token.shape[1] == 1 else cls_token.view(cls_token.shape[0], -1)
+
+        if x.ndim == 2:
+            x = x.unsqueeze(0)
+        elif x.ndim == 4:
+            if x.shape[0] == 1:
+                x = x.squeeze(0)
+            else:
+                raise RuntimeError(f"Unexpected 4D x shape: {x.shape}")
+
+        x = torch.cat((cls_token.unsqueeze(1), x), dim=1)  # (batch, 1+_H*_W, in_dim)
 
         # Bag pooling with critical feature
         Q_expanded = Q.unsqueeze(1)
@@ -488,42 +623,103 @@ class FRMILMIL(MILTemplate):
             - query_features: Shape (num_tiles, in_dim) - shifted features
             - instance_predictions: Shape (num_tiles,) - attention scores
         """
-        # feats are already tile embeddings, no need to encode
+        # Follow the exact same pattern as encode_slide_embedding
+        # Add batch dimension
         feats_batch = feats.unsqueeze(0)  # (1, num_tiles, in_dim)
 
         A1, Q = self.recalib(feats_batch, "max")
 
-        # Shift features (always enabled)
-        Q_expanded = Q.unsqueeze(1)
-        i_shift = F.relu(feats_batch - Q_expanded)
+        # Shift features (always enabled) - store original for return
+        Q_expanded = Q.unsqueeze(1)  # (1, 1, in_dim)
+        i_shift = F.relu(feats_batch - Q_expanded)  # (1, num_tiles, in_dim)
 
-        # Pad inputs to square grid
-        H = i_shift.shape[1]
+        # Pad inputs to square grid (modify feats_batch in place like encode_slide_embedding)
+        feats_batch = i_shift  # Work with shifted features
+        H = feats_batch.shape[1]
         _H = int(np.ceil(np.sqrt(H)))
         _W = _H
         add_length = _H * _W - H
         if add_length > 0:
-            i_shift_padded = torch.cat([i_shift, i_shift[:, :add_length, :]], dim=1)
-        else:
-            i_shift_padded = i_shift
+            feats_batch = torch.cat([feats_batch, feats_batch[:, :add_length, :]], dim=1)
 
         # CLS token
-        B = i_shift_padded.shape[0]
+        B = feats_batch.shape[0]
+        if feats_batch.ndim == 2:
+            feats_batch = feats_batch.unsqueeze(0)
+        elif feats_batch.ndim == 4:
+            if B == 1:
+                feats_batch = feats_batch.squeeze(0)
+            else:
+                raise RuntimeError(f"Unexpected 4D feats_batch shape: {feats_batch.shape}")
+
         cls_tokens = self.cls_token.expand(B, -1, -1)
-        x_padded = torch.cat((cls_tokens, i_shift_padded), dim=1)
+        feats_batch = torch.cat((cls_tokens, feats_batch), dim=1)
 
         # CNN Position Learning
-        cls_token, feat_token = x_padded[:, 0], x_padded[:, 1:]
+        cls_token, feat_token = feats_batch[:, 0], feats_batch[:, 1:]
+        # Get actual sequence length and recompute _H, _W to match exactly
+        actual_seq_len = feat_token.shape[1]
+        _H = int(np.ceil(np.sqrt(actual_seq_len)))
+        _W = _H
+        target_len = _H * _W
+
+        # Pad or truncate to match target length exactly
+        if actual_seq_len < target_len:
+            pad_needed = target_len - actual_seq_len
+            padding = feat_token[:, :pad_needed, :]
+            feat_token = torch.cat([feat_token, padding], dim=1)
+        elif actual_seq_len > target_len:
+            feat_token = feat_token[:, :target_len, :]
+
         cnn_feat = feat_token.transpose(1, 2).view(B, self.in_dim, _H, _W)
         cnn_feat = self.conv_head(cnn_feat) + cnn_feat
-        x_processed = cnn_feat.flatten(2).transpose(1, 2)
-        x_processed = torch.cat((cls_token.unsqueeze(1), x_processed), dim=1)
+        x = cnn_feat.flatten(2).transpose(1, 2)  # (batch, _H*_W, in_dim)
+
+        # Ensure cls_token is 2D and x is 3D before concatenation
+        if cls_token.ndim == 1:
+            cls_token = cls_token.unsqueeze(0)  # (1, in_dim)
+        elif cls_token.ndim == 3:
+            cls_token = cls_token.squeeze(1) if cls_token.shape[1] == 1 else cls_token.view(cls_token.shape[0], -1)
+
+        if x.ndim == 2:
+            x = x.unsqueeze(0)
+        elif x.ndim == 4:
+            if x.shape[0] == 1:
+                x = x.squeeze(0)
+            else:
+                raise RuntimeError(f"Unexpected 4D x shape: {x.shape}")
+
+        x = torch.cat((cls_token.unsqueeze(1), x), dim=1)  # (batch, 1+_H*_W, in_dim)
 
         # Bag pooling with critical feature
-        Q_expanded = Q.unsqueeze(1)
-        bag = self.selt_att(Q_expanded, x_processed)
-        bag_pred = self.classifier(bag)
+        # Q should be (batch, in_dim) from recalib, ensure it's 2D
+        if Q.ndim == 1:
+            Q = Q.unsqueeze(0)  # (1, in_dim)
+        elif Q.ndim == 3:
+            # If somehow 3D, squeeze middle dimension
+            Q = Q.squeeze(1) if Q.shape[1] == 1 else Q.view(Q.shape[0], -1)
+        # x should be (batch, seq_len, in_dim) - ensure it's 3D
+        if x.ndim == 2:
+            x = x.unsqueeze(0)  # (1, seq_len, in_dim)
+        elif x.ndim == 4:
+            if x.shape[0] == 1:
+                x = x.squeeze(0)  # Remove first dimension if batch=1
+            else:
+                raise RuntimeError(f"Unexpected 4D x shape: {x.shape}")
 
+        # Now create Q_expanded: (batch, 1, in_dim)
+        Q_expanded = Q.unsqueeze(1)
+
+        # Final verification: both must be 3D
+        if Q_expanded.ndim != 3:
+            raise RuntimeError(f"Q_expanded must be 3D, got shape {Q_expanded.shape}, Q shape was {Q.shape}")
+        if x.ndim != 3:
+            raise RuntimeError(f"x must be 3D, got shape {x.shape}")
+
+        bag = self.selt_att(Q_expanded, x)  # (1, in_dim)
+        bag_pred = self.classifier(bag)  # (1, num_classes)
+
+        # Return shifted features (original, before padding) for loss computation
         return bag_pred, i_shift.squeeze(0), A1.squeeze(0)
 
 
