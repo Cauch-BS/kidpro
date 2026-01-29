@@ -251,6 +251,42 @@ class _LongNetViT(nn.Module):
                 outcomes.append(self.norm(o)[:, 0])
         return outcomes
 
+    def forward_sequence(
+        self,
+        x: torch.Tensor | None = None,
+        coords: torch.Tensor | None = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        """
+        Return the full normalized token sequence (CLS + tiles) from the encoder.
+
+        This is used for RankMix-style per-tile scoring, analogous to the reference
+        implementation's per-instance predictions.
+
+        Returns:
+            Tensor of shape (B, 1 + N, embed_dim) (CLS token at index 0).
+        """
+        if x is None:
+            x = kwargs.get("x", None)
+        if coords is None:
+            coords = kwargs.get("coords", None)
+        if x is None or coords is None:
+            raise TypeError("_LongNetViT.forward_sequence requires x and coords (either as args or kwargs).")
+
+        x = self.input_norm(x)
+        x = self.input_dropout(x)
+
+        x = self.patch_embed(x)
+        pos = self.coords_to_pos(coords, self.tile_size)
+        x = x + self.pos_embed[:, pos, :].squeeze(0) # type: ignore
+
+        cls_token = self.cls_token + self.pos_embed[:, :1, :] # type: ignore
+        cls_tokens = cls_token.expand(x.shape[0], -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        o = self.encoder(src_tokens=None, token_embeddings=x)["encoder_out"]
+        return self.norm(o) # type: ignore[no-any-return]
+
 
 SlideEncoder = Union[_LongNetViT, SimpleAggregator]
 
@@ -346,6 +382,44 @@ class LongNetMIL(MILTemplate):
         return cast(torch.Tensor, self.classifier(embedding))
 
     # encode_slide and forward are inherited from MILTemplate
+
+    def tile_logits(
+        self,
+        feats: torch.Tensor,
+        coords: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """
+        Compute per-tile logits using the current slide encoder and classifier head.
+
+        This provides "instance predictions" similar to the reference RankMix code
+        (e.g., DSMIL ins_prediction), enabling rank-based tile selection.
+
+        Args:
+            feats: Tile embeddings of shape (N, in_chans)
+            coords: Tile coords of shape (N, 2) in pixel-space (x, y). Required for _LongNetViT.
+
+        Returns:
+            Logits of shape (N, num_classes)
+        """
+        if isinstance(self.slide_encoder, SimpleAggregator):
+            # Mirror SimpleAggregator's token projection (without pooling).
+            x = self.slide_encoder.input_norm(feats)
+            x = self.slide_encoder.dropout(x)
+            x = self.slide_encoder.proj(x)
+            x = self.slide_encoder.norm(x)
+            return cast(torch.Tensor, self.classifier(x))
+
+        # _LongNetViT path: run encoder to obtain token embeddings.
+        if coords is None:
+            raise ValueError("coords are required for _LongNetViT tile_logits().")
+
+        coords_grid, _stride_x, _stride_y = _coords_pixel_to_grid(coords)
+        coords_grid = coords_grid.to(device=coords.device, dtype=coords.dtype)
+
+        # (1, 1+N, D)
+        seq = self.slide_encoder.forward_sequence(x=feats.unsqueeze(0), coords=coords_grid.unsqueeze(0))
+        tokens = seq[:, 1:, :].squeeze(0)  # (N, D)
+        return cast(torch.Tensor, self.classifier(tokens))
 
 
 def _resolve_longnet_weights_path(cfg: "AppCfg") -> Path:

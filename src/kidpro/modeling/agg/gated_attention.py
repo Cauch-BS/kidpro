@@ -74,8 +74,8 @@ class GatedAttentionSlideEncoder(nn.Module):
             # Project positional embeddings to match feat_dim for addition
             self.pos_proj = nn.Linear(pos_embed_dim, feat_dim)
         else:
-            self.pos_embed_mlp = None
-            self.pos_proj = None
+            self.pos_embed_mlp = None # type: ignore[assignment]
+            self.pos_proj = None # type: ignore[assignment]
 
         # Multi-head attention: V, U, and w projections for each head
         # V: value network (what information to extract)
@@ -116,7 +116,6 @@ class GatedAttentionSlideEncoder(nn.Module):
         Returns:
             Slide embedding of shape (1, feat_dim)
         """
-        num_tiles = feats.shape[0]
 
         # Add positional embeddings if enabled and coords provided
         if self.use_pos_embed and coords is not None:
@@ -151,7 +150,7 @@ class GatedAttentionSlideEncoder(nn.Module):
         # Project back to feat_dim
         M = self.output_proj(M_concat)  # (1, feat_dim)
 
-        return M
+        return M # type: ignore[no-any-return]
 
 
 class GatedAttentionMIL(MILTemplate):

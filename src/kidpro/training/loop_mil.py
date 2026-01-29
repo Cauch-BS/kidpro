@@ -38,9 +38,145 @@ except ImportError:
 from ..config.load import RuntimeResolved
 from ..config.schema import AppCfg
 from .early_stop import EarlyStopping
+from .loss import compute_dsmil_loss, compute_frmil_loss
 from .rankmix import RankMixSampler, TileScorer, compute_rankmix_loss, rankmix
 
 log = logging.getLogger(__name__)
+
+
+def _compute_mil_loss(
+  model: nn.Module,
+  feats: torch.Tensor,
+  coords: torch.Tensor,
+  target: torch.Tensor,
+  target_val: int,
+  cfg: AppCfg,
+  use_amp: bool,
+  criterion: nn.Module,
+  is_rankmix: bool = False,
+  class_counts_dict: Optional[Dict[int, int]] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+  """Compute loss for MIL models, handling DSMIL/FRMIL special cases.
+
+  Args:
+    model: MIL model
+    feats: Tile embeddings of shape (num_tiles, feat_dim)
+    coords: Tile coordinates of shape (num_tiles, 2)
+    target: Target label tensor
+    target_val: Integer target label value
+    cfg: Application configuration
+    use_amp: Whether to use automatic mixed precision
+    criterion: Loss criterion to use for standard models (ignored for DSMIL/FRMIL)
+    is_rankmix: Whether this is a RankMix mixed sample (affects FRMIL feature magnitude loss)
+    class_counts_dict: Optional dictionary mapping class index to count (for class weights)
+
+  Returns:
+    Tuple of (loss, logits)
+  """
+  aggregator_type = cfg.model.aggregator_type
+  num_classes = cfg.dataset.task.num_classes # type: ignore[union-attr]
+
+  if aggregator_type == "dsmil":
+    # DSMIL: Use forward_with_attention to get instance and bag predictions
+    if hasattr(model, "forward_with_attention"):
+      instance_pred, bag_pred, _, _ = model.forward_with_attention(feats, coords) # type: ignore[operator]
+      # For RankMix, convert soft label to appropriate format
+      if is_rankmix:
+        y_soft_val = target.item() if isinstance(target, torch.Tensor) else float(target)
+        y_tensor = torch.tensor([y_soft_val], device=bag_pred.device, dtype=torch.float32)
+        if num_classes > 1:
+          # Multi-class: convert to one-hot
+          y_onehot = torch.zeros_like(bag_pred)
+          y_onehot[0, int(round(y_soft_val))] = y_soft_val
+          y_tensor = y_onehot
+        loss = compute_dsmil_loss(instance_pred, bag_pred, y_tensor, num_classes=num_classes)
+      else:
+        loss = compute_dsmil_loss(instance_pred, bag_pred, target, num_classes=num_classes)
+      return loss, bag_pred
+    else:
+      # Fallback to standard forward
+      logits = _embeddings_to_logits(model, feats, coords, use_amp)
+      if is_rankmix:
+        brier_weight = getattr(cfg.train, "brier_weight", 0.1)
+        y_soft = target.item() if isinstance(target, torch.Tensor) else float(target)
+        loss = compute_rankmix_loss(logits, y_soft, brier_weight=brier_weight)
+      else:
+        loss = criterion(logits.float(), target)
+      return loss, logits
+
+  elif aggregator_type == "frmil":
+    # FRMIL: Use forward_with_aux to get bag, query, and instance predictions
+    if hasattr(model, "forward_with_aux"):
+      bag_pred, query_feats, instance_pred = model.forward_with_aux(feats, coords) # type: ignore[operator]
+
+      # Compute class weights and pos_weight from class counts if available
+      class_weights = None
+      pos_weight = None
+      if class_counts_dict is not None:
+        device = bag_pred.device
+        if num_classes > 1:
+          # Multi-class: compute class weights as inverse frequencies (normalized)
+          total = sum(class_counts_dict.values())
+          weights = []
+          for i in range(num_classes):
+            count = class_counts_dict.get(i, 0)
+            if count == 0:
+              count = 1  # Avoid division by zero
+            weights.append(total / (num_classes * count))
+          class_weights = torch.tensor(weights, dtype=torch.float32).to(device)
+        else:
+          # Binary classification: compute pos_weight
+          # pos_weight = num_negative / num_positive
+          num_negative = class_counts_dict.get(0, 0)
+          num_positive = class_counts_dict.get(1, 0)
+          if num_positive > 0 and num_negative > 0:
+            pos_weight = torch.tensor([num_negative / num_positive], dtype=torch.float32).to(device)
+
+      # Determine normal/anomaly indices based on label (skip for RankMix mixed samples)
+      if is_rankmix:
+        norm_idx = None
+        ano_idx = None
+        y_soft_val = target.item() if isinstance(target, torch.Tensor) else float(target)
+        y_tensor = torch.tensor([y_soft_val], device=bag_pred.device, dtype=torch.float32)
+      else:
+        norm_idx = 0 if target_val == 0 else None
+        ano_idx = 0 if target_val == 1 else None
+        y_tensor = target
+
+      loss = compute_frmil_loss(
+        bag_pred,
+        instance_pred,
+        query_feats.unsqueeze(0),  # Add batch dimension
+        y_tensor,
+        num_classes=num_classes,
+        class_weights=class_weights,
+        pos_weight=pos_weight,
+        margin=cfg.model.frmil_margin,
+        norm_idx=norm_idx,
+        ano_idx=ano_idx,
+      )
+      return loss, bag_pred
+    else:
+      # Fallback to standard forward
+      logits = _embeddings_to_logits(model, feats, coords, use_amp)
+      if is_rankmix:
+        brier_weight = getattr(cfg.train, "brier_weight", 0.1)
+        y_soft = target.item() if isinstance(target, torch.Tensor) else target
+        loss = compute_rankmix_loss(logits, y_soft, brier_weight=brier_weight)
+      else:
+        loss = criterion(logits.float(), target)
+      return loss, logits
+
+  else:
+    # Standard MIL training (LongNet, GatedAttention, etc.)
+    logits = _embeddings_to_logits(model, feats, coords, use_amp)
+    if is_rankmix:
+      brier_weight = getattr(cfg.train, "brier_weight", 0.1)
+      y_soft = target.item() if isinstance(target, torch.Tensor) else float(target)
+      loss = compute_rankmix_loss(logits, y_soft, brier_weight=brier_weight)
+    else:
+      loss = criterion(logits.float(), target)
+    return loss, logits
 
 
 def _find_best_threshold(
@@ -437,6 +573,7 @@ def fit_mil(
   rankmix_scorer: Optional[TileScorer] = None,
   rankmix_sampler: Optional[RankMixSampler] = None,
   train_dataset: Optional[Any] = None,
+  class_counts_dict: Optional[Dict[int, int]] = None,
 ) -> Path:
   """
   Train MIL model with early stopping and checkpointing.
@@ -457,6 +594,7 @@ def fit_mil(
     rankmix_scorer: Optional TileScorer for RankMix (required if rankmix enabled)
     rankmix_sampler: Optional RankMixSampler for partner slide selection
     train_dataset: Optional training dataset for RankMix partner access
+    class_counts_dict: Optional dictionary mapping class index to count (for class weights in FRMIL/DSMIL)
 
   Returns:
     Path to best model checkpoint
@@ -498,7 +636,10 @@ def fit_mil(
 
   # RankMix configuration
   rankmix_cfg = cfg.train.rankmix
-  rankmix_enabled = rankmix_cfg.enabled and rankmix_scorer is not None and rankmix_sampler is not None
+  # RankMix can run without a separate scorer: we prefer scoring tiles using the
+  # current MIL model (reference implementation behavior). A scorer, if provided,
+  # is used only as a fallback.
+  rankmix_enabled = bool(rankmix_cfg.enabled) and (rankmix_sampler is not None) and (train_dataset is not None)
 
   if rankmix_enabled:
     log.info(
@@ -507,7 +648,7 @@ def fit_mil(
       rankmix_cfg.minority_sampling_ratio,
     )
   elif rankmix_cfg.enabled:
-    log.warning("[RANKMIX] Config enabled but missing scorer/sampler - running standard training")
+    log.warning("[RANKMIX] Config enabled but missing sampler/dataset - running standard training")
 
   for epoch in range(epochs):
     # -------------------------
@@ -563,7 +704,7 @@ def fit_mil(
         # -------------------------
         # RankMix: Mix with partner slide (Stage 2 training)
         # -------------------------
-        if rankmix_enabled and rankmix_sampler is not None and rankmix_scorer is not None and train_dataset is not None:
+        if rankmix_enabled and rankmix_sampler is not None and train_dataset is not None:
           try:
             # Sample a partner slide (biased toward minority class)
             partner_idx = rankmix_sampler.sample_partner_idx()
@@ -581,25 +722,40 @@ def fit_mil(
 
             # Score tiles for both slides
             with torch.no_grad():
-              scores_a = rankmix_scorer(feats_a.detach())
-              scores_b = rankmix_scorer(feats_b.detach())
+              scores_a: torch.Tensor | None = None
+              scores_b: torch.Tensor | None = None
+
+              # Preferred: use model-derived per-tile logits for "instance ranking"
+              tile_logits_fn = getattr(model, "tile_logits", None)
+              if callable(tile_logits_fn):
+                logits_tiles_a = tile_logits_fn(feats_a.detach(), coords_a.detach())
+                logits_tiles_b = tile_logits_fn(feats_b.detach(), coords_b.detach())
+                # Rank tiles by evidence for their (bag) label class, as in the reference code.
+                scores_a = logits_tiles_a[:, y_val]
+                scores_b = logits_tiles_b[:, partner_y_val]
+
+              # Fallback: use a standalone scorer if available
+              if scores_a is None or scores_b is None:
+                if rankmix_scorer is None:
+                  raise RuntimeError("RankMix requires either model.tile_logits() or a rankmix_scorer.")
+                scores_a = rankmix_scorer(feats_a.detach())
+                scores_b = rankmix_scorer(feats_b.detach())
 
             # Mix ranked embeddings
-            feats_mixed, y_mixed, lam = rankmix(
-              feats_a, feats_b, scores_a, scores_b,
+            feats_mixed, y_mixed, lam, idx_a, _idx_b = rankmix(
+              feats_a, feats_b, scores_a, scores_b, # type: ignore[arg-type]
               y_val, partner_y_val, alpha=rankmix_cfg.alpha
             )
 
-            # Use mixed coordinates (average or from slide A)
-            # For simplicity, we use coords from slide A since RankMix preserves order
-            k = feats_mixed.shape[0]
-            coords_mixed = coords_a[:k] if k <= coords_a.shape[0] else coords_a
+            # IMPORTANT: coords must match the selected embeddings (idx_a is sorted to preserve order)
+            coords_mixed = coords_a[idx_a]
 
-            # Get logits from mixed embeddings
-            logits = _embeddings_to_logits(model, feats_mixed, coords_mixed, use_amp)
-
-            # Compute loss with soft label
-            loss = compute_rankmix_loss(logits, y_mixed)
+            # Get logits from mixed embeddings using centralized loss computation
+            y_mixed_tensor = torch.tensor([y_mixed], device=feats_mixed.device, dtype=torch.float32)
+            loss, logits = _compute_mil_loss(
+              model, feats_mixed, coords_mixed, y_mixed_tensor, int(round(y_mixed)),
+              cfg, use_amp, criterion, is_rankmix=True, class_counts_dict=class_counts_dict
+            )
 
             # Track RankMix statistics
             rankmix_count += 1
@@ -614,12 +770,16 @@ def fit_mil(
             logits = _embeddings_to_logits(model, feats_a, coords_a, use_amp)
             loss = criterion(logits.float(), y)
             y_for_metrics = y_val
+        # -------------------------
+        # Standard training (Stage 1 or RankMix disabled)
+        # -------------------------
+        # Use centralized loss computation function
         else:
-          # -------------------------
-          # Standard training (Stage 1 or RankMix disabled)
-          # -------------------------
-          logits = _embeddings_to_logits(model, feats_a, coords_a, use_amp)
-          loss = criterion(logits.float(), y)
+
+          loss, logits = _compute_mil_loss(
+            model, feats_a, coords_a, y, y_val, cfg, use_amp, criterion, is_rankmix=False,
+            class_counts_dict=class_counts_dict
+          )
           y_for_metrics = y_val
 
         # Training metrics (slide-level) - detach so metrics don't backprop.

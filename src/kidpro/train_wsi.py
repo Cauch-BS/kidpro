@@ -19,6 +19,7 @@ from .data.transform import get_transforms
 from .modeling.factory_wsi import build_model_mil
 from .modeling.lora import apply_lora
 from .training.loop_mil import fit_mil
+from .training.loss import build_mil_criterion
 from .training.rankmix import RankMixSampler, TileScorer
 from .utils.model_io import load_state_dict_generic, load_state_dict_with_remap
 
@@ -167,21 +168,22 @@ def main(hcfg: DictConfig) -> None:
   )
 
   # -------------------------
-  # Class-weighted loss (optional)
+  # Build loss criterion (centralized in loss.py)
   # -------------------------
+  class_counts_dict = None
   if effective_use_class_weights:
     num_classes = int(getattr(cfg.dataset.task, "num_classes", 2))
     class_counts = df_tr["GT"].value_counts().reindex(range(num_classes), fill_value=0).sort_index()
-    total = len(df_tr)
-    counts = class_counts.to_numpy()
-    # Avoid division by zero if a class is missing in training split
-    counts_safe = counts.copy()
-    counts_safe[counts_safe == 0] = 1
-    weights = torch.tensor(total / (num_classes * counts_safe), dtype=torch.float32)
-    log.info("[CLASS WEIGHTS] Class counts: %s, weights: %s", class_counts.to_dict(), weights.tolist())
-    criterion = torch.nn.CrossEntropyLoss(weight=weights.to(rr.device))
+    class_counts_dict = class_counts.to_dict()
+    log.info("[CLASS WEIGHTS] Class counts: %s", class_counts_dict)
+
+  criterion = build_mil_criterion(cfg, class_counts_dict, device=rr.device)
+  aggregator_type = cfg.model.aggregator_type
+  if aggregator_type in ("dsmil", "frmil"):
+    log.info("[LOSS] Using %s-specific loss function", aggregator_type.upper())
   else:
-    criterion = torch.nn.CrossEntropyLoss()
+    brier_weight = getattr(cfg.train, "brier_weight", 0.1)
+    log.info("[LOSS] Using CrossEntropy + Brier loss (brier_weight=%.3f)", brier_weight)
 
   # -------------------------
   # Parameter groups with different learning rates
@@ -284,6 +286,7 @@ def main(hcfg: DictConfig) -> None:
     rankmix_scorer=rankmix_scorer,
     rankmix_sampler=rankmix_sampler,
     train_dataset=ds_tr if cfg.train.rankmix.enabled else None,
+    class_counts_dict=class_counts_dict,
   )
   log.info(f"[RUN COMPLETE] run_dir={run_dir} best={best_path}")
 

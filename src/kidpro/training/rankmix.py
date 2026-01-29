@@ -84,6 +84,30 @@ def rank_and_select(embeds: Tensor, scores: Tensor, k: int) -> tuple[Tensor, Ten
   return embeds[sorted_indices], sorted_indices
 
 
+def rank_and_select_with_coords(
+  embeds: Tensor,
+  coords: Tensor,
+  scores: Tensor,
+  k: int,
+) -> tuple[Tensor, Tensor, Tensor]:
+  """Select top-k embeddings and coords by score, preserving original order.
+
+  Args:
+    embeds: Tile embeddings of shape (N, D)
+    coords: Tile coordinates of shape (N, 2)
+    scores: Importance scores of shape (N,)
+    k: Number of tiles to select
+
+  Returns:
+    Tuple of (selected_embeds, selected_coords, selected_indices) where:
+      - selected_embeds: (k, D)
+      - selected_coords: (k, 2)
+      - selected_indices: (k,) indices into the original arrays (sorted ascending)
+  """
+  selected_embeds, selected_idx = rank_and_select(embeds, scores, k)
+  return selected_embeds, coords[selected_idx], selected_idx
+
+
 def rankmix(
   emb_a: Tensor,
   emb_b: Tensor,
@@ -92,14 +116,15 @@ def rankmix(
   y_a: int,
   y_b: int,
   alpha: float = 1.0,
-) -> tuple[Tensor, float, float]:
+) -> tuple[Tensor, float, float, Tensor, Tensor]:
   """Mix ranked tile embeddings from two slides.
 
   Implements the core RankMix algorithm:
-    1. Select top-k tiles from each slide (k = min(len(a), len(b)))
-    2. Sample mixing ratio λ from Beta(α, α)
-    3. Mix embeddings: H_mix = λ*H_a + (1-λ)*H_b
-    4. Mix labels: Y_mix = λ*Y_a + (1-λ)*Y_b
+    1. Select top-k tiles from each slide (k = max(len(a), len(b)))
+    2. Pad the smaller slide to match the larger one
+    3. Sample mixing ratio λ from Beta(α, α)
+    4. Mix embeddings: H_mix = λ*H_a + (1-λ)*H_b
+    5. Mix labels: Y_mix = λ*Y_a + (1-λ)*Y_b
 
   Args:
     emb_a: Tile embeddings from slide A, shape (N_a, D)
@@ -111,16 +136,44 @@ def rankmix(
     alpha: Beta distribution parameter (higher = more uniform λ distribution)
 
   Returns:
-    Tuple of (mixed_embeddings, mixed_label, lambda_value)
-    - mixed_embeddings: Shape (k, D) where k = min(N_a, N_b)
+    Tuple of (mixed_embeddings, mixed_label, lambda_value, idx_a, idx_b)
+    - mixed_embeddings: Shape (k, D) where k = max(N_a, N_b)
     - mixed_label: Float in [0, 1]
     - lambda_value: The sampled mixing ratio
+    - idx_a / idx_b: The selected tile indices (sorted to preserve original order)
   """
-  k = min(len(emb_a), len(emb_b))
+  n_a, n_b = len(emb_a), len(emb_b)
+  k = max(n_a, n_b)
 
-  # Select top-k embeddings from each slide
-  h_a, _ = rank_and_select(emb_a, score_a, k)
-  h_b, _ = rank_and_select(emb_b, score_b, k)
+  # Select top-k embeddings from each slide (will select all if k > available)
+  # For the smaller slide, we'll pad it later
+  h_a, idx_a = rank_and_select(emb_a, score_a, min(k, n_a))
+  h_b, idx_b = rank_and_select(emb_b, score_b, min(k, n_b))
+
+  # Pad the smaller slide to match the larger one
+  if n_a < n_b:
+    # Pad slide A: pad along first dimension (number of tiles)
+    # F.pad format for 2D: (pad_left_dim1, pad_right_dim1, pad_left_dim0, pad_right_dim0)
+    n_pad = n_b - n_a
+    h_a = F.pad(h_a, (0, 0, 0, n_pad), "constant", 0)
+    # Extend idx_a with padding indices (use last index for padding)
+    if len(idx_a) > 0:
+      last_idx = idx_a[-1].item() if idx_a.numel() > 0 else 0
+      pad_indices = torch.full((n_pad,), last_idx, dtype=idx_a.dtype, device=idx_a.device)
+      idx_a = torch.cat([idx_a, pad_indices])
+    else:
+      idx_a = torch.zeros(n_pad, dtype=torch.long, device=emb_a.device)
+  elif n_b < n_a:
+    # Pad slide B: pad along first dimension (number of tiles)
+    n_pad = n_a - n_b
+    h_b = F.pad(h_b, (0, 0, 0, n_pad), "constant", 0)
+    # Extend idx_b with padding indices (use last index for padding)
+    if len(idx_b) > 0:
+      last_idx = idx_b[-1].item() if idx_b.numel() > 0 else 0
+      pad_indices = torch.full((n_pad,), last_idx, dtype=idx_b.dtype, device=idx_b.device)
+      idx_b = torch.cat([idx_b, pad_indices])
+    else:
+      idx_b = torch.zeros(n_pad, dtype=torch.long, device=emb_b.device)
 
   # Sample mixing ratio
   lam = float(np.random.beta(alpha, alpha))
@@ -129,7 +182,7 @@ def rankmix(
   h_mxp = lam * h_a + (1 - lam) * h_b
   y_mxp = lam * float(y_a) + (1 - lam) * float(y_b)
 
-  return h_mxp, y_mxp, lam
+  return h_mxp, y_mxp, lam, idx_a, idx_b
 
 
 class RankMixSampler:
@@ -212,14 +265,17 @@ class RankMixSampler:
 def compute_rankmix_loss(
   logits: Tensor,
   soft_target: float,
+  brier_weight: float = 0.1,
 ) -> Tensor:
-  """Compute binary cross-entropy loss for soft (mixed) labels.
+  """Compute binary cross-entropy loss with Brier score for soft (mixed) labels.
 
   Uses PyTorch's built-in BCE with logits, which natively supports soft labels.
+  Adds a Brier score component to prevent overconfidence.
 
   Args:
     logits: Model output logits of shape (1, 2) for binary classification
     soft_target: Soft label in [0, 1] representing mixed ground truth
+    brier_weight: Weight for Brier score component (default: 0.1)
 
   Returns:
     Scalar loss tensor
@@ -231,5 +287,12 @@ def compute_rankmix_loss(
   # Create target tensor
   target = torch.tensor([soft_target], device=logits.device, dtype=torch.float32)
 
-  # Use PyTorch's built-in BCE with logits
-  return F.binary_cross_entropy_with_logits(pos_logit, target)
+  # Binary cross-entropy loss
+  bce = F.binary_cross_entropy_with_logits(pos_logit, target)
+
+  # Brier score: mean squared error between predicted probability and soft target
+  probs = torch.sigmoid(pos_logit)
+  brier = torch.mean((probs - target) ** 2)
+
+  # Combine losses
+  return bce + brier_weight * brier

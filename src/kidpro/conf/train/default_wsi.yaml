@@ -24,6 +24,9 @@ rankmix:
 weight_decay: 0.05
 head_lr_multiplier: 3.0
 
+# Loss settings
+brier_weight: 0.1  # Weight for Brier score component to prevent overconfidence
+
 # Scheduler settings
 warmup_epochs: 10
 scheduler_type: cosine  # cosine, step, or none

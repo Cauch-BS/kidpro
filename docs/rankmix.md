@@ -164,6 +164,7 @@ Values around 0.5 indicate balanced mixing.
 - `src/kidpro/training/loop_mil.py` - Training loop integration
   - `_get_tile_embeddings`: Extracts embeddings without running aggregator
   - `fit_mil`: Extended with RankMix parameters and two-stage logic
+  - Supports DSMIL and FRMIL aggregators with their specific loss functions
 
 - `src/kidpro/train_wsi.py` - Entry point initialization
   - Creates TileScorer and RankMixSampler when enabled
@@ -174,6 +175,26 @@ Values around 0.5 indicate balanced mixing.
 
 - `src/kidpro/conf/train/default_wsi.yaml` - Default configuration
   - RankMix config block (disabled by default)
+
+### Aggregator Compatibility
+
+RankMix works with all aggregator types:
+
+- **LongNet**: Uses `model.tile_logits()` for instance predictions
+- **DSMIL**: Uses `model.tile_logits()` (instance classifier outputs)
+- **FRMIL**: Uses `model.tile_logits()` (encoder attention scores)
+- **GatedAttention**: Uses `model.tile_logits()` if available, otherwise falls back to TileScorer
+
+When using DSMIL or FRMIL with RankMix, the training loop automatically uses the appropriate loss function (`compute_dsmil_loss` or `compute_frmil_loss`) instead of the standard RankMix loss.
+
+The standard RankMix loss (`compute_rankmix_loss`) combines:
+
+- **Binary Cross-Entropy (BCE)**: Handles soft labels (e.g., 0.7 instead of hard 0/1) using PyTorch's `binary_cross_entropy_with_logits`
+- **Brier Score**: Mean squared error between predicted probability and soft target, weighted by `brier_weight` (default: 0.1) to prevent overconfidence
+
+Formula: `loss = BCE(logits, soft_target) + brier_weight * MSE(sigmoid(logits), soft_target)`
+
+For DSMIL and FRMIL, their specific loss functions (which combine bag-level and instance-level losses) are used instead, as they provide better supervision for these architectures.
 
 ### Soft Labels
 

@@ -153,13 +153,21 @@ class ModelCfg(BaseModel):
   input_size: Optional[int] = 256
 
   # Aggregator selection and input conditioning
-  aggregator_type: Literal["longnet", "mean_pool", "max_pool", "gated_attention"] = "longnet"
+  aggregator_type: Literal["longnet", "mean_pool", "max_pool", "gated_attention", "dsmil", "frmil"] = "longnet"
   longnet_input_norm: bool = True
   longnet_input_dropout: float = 0.1
 
   # Gated Attention aggregator config
   gated_attention_hidden_dim: int = 128
   gated_attention_dropout: float = 0.25
+
+  # DSMIL aggregator config
+  dsmil_dropout_node: float = 0.25
+
+  # FRMIL aggregator config
+  frmil_n_heads: int = 4
+  frmil_margin: float = 8.48
+  frmil_k: int = 16
 
   @model_validator(mode="after")
   def _validate(self) -> "ModelCfg":
@@ -349,6 +357,9 @@ class TrainCfg(BaseModel):
   scheduler_type: Literal["cosine", "step", "none"] = "cosine"
   gradient_clip: float = 1.0
 
+  # Loss settings
+  brier_weight: float = 0.1  # Weight for Brier score component in combined loss
+
   # Sanity check mode
   sanity_check: bool = False
   sanity_check_samples: int = 10
@@ -369,6 +380,8 @@ class TrainCfg(BaseModel):
       raise ValueError("train.warmup_epochs must be >= 0.")
     if self.gradient_clip < 0:
       raise ValueError("train.gradient_clip must be >= 0.")
+    if self.brier_weight < 0:
+      raise ValueError("train.brier_weight must be >= 0.")
     if self.sanity_check_samples <= 0:
       raise ValueError("train.sanity_check_samples must be > 0.")
     return self
