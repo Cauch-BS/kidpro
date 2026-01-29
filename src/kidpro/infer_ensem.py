@@ -326,12 +326,22 @@ def run_csv_ensemble_inference(cfg: AppCfg, rr: RuntimeResolved, infer: Dict[str
     drop_heads=False,
     ckpt_prefix="slide_encoder.",
   )
-  model.classifier = load_state_dict_generic(  # type: ignore[attr-defined]
-    cast(torch.nn.Module, model.classifier),
-    weights_path,
-    drop_heads=False,
-    ckpt_prefix="classifier.",
-  )
+
+  # Check if classifier keys exist in checkpoint (some models like DSMIL use nn.Identity())
+  from .utils.model_io import _load_checkpoint_state
+  checkpoint_state = _load_checkpoint_state(weights_path)
+  has_classifier_keys = any(k.startswith("classifier.") for k in checkpoint_state.keys())
+
+  if has_classifier_keys:
+    model.classifier = load_state_dict_generic(  # type: ignore[attr-defined]
+      cast(torch.nn.Module, model.classifier),
+      weights_path,
+      drop_heads=False,
+      ckpt_prefix="classifier.",
+    )
+  else:
+    # Classifier is Identity or doesn't have learnable parameters (e.g., DSMIL)
+    log.info("[infer_ensem] No classifier.* keys found in checkpoint; skipping classifier load (likely Identity module)")
 
   model = model.to(rr.device)
   model.eval()
