@@ -1,0 +1,43 @@
+batch_size: 4
+epochs: 100
+lr: 3e-5
+seed: 42
+
+# Class imbalance handling
+use_class_weights: false
+use_balanced_sampling: true
+
+# RankMix data augmentation for class imbalance (optional)
+# Mixes ranked tile embeddings from pairs of WSIs to address minority class paucity.
+# See docs/rankmix.md for usage details.
+#
+# Two-stage training (explicit separate runs):
+#   Stage 1: Train with rankmix.enabled=false (standard MIL)
+#   Stage 2: Train with rankmix.enabled=true and rankmix.stage1_checkpoint=<path_to_stage1_best_model.pt>
+rankmix:
+  enabled: false  # Set to true to enable RankMix (Stage 2)
+  alpha: 1.0  # Beta distribution param for λ (mixing ratio); higher = more uniform
+  minority_sampling_ratio: 0.7  # Probability of sampling minority class in pairs
+  stage1_checkpoint: null  # Path to Stage 1 best_model.pt (required when enabled=true)
+
+# Optimizer settings
+weight_decay: 0.05
+head_lr_multiplier: 3.0
+
+# Loss settings
+brier_weight: 0.1  # Weight for Brier score component to prevent overconfidence
+
+# Scheduler settings
+warmup_epochs: 10
+scheduler_type: cosine  # cosine, step, or none
+gradient_clip: 1.0
+
+# Sanity check mode (for quick iteration)
+sanity_check: false
+sanity_check_samples: 10
+
+early_stopping:
+  patience: 10
+  min_delta: 1e-4
+  mode: max
+  metric: val_pr_auc  # val_loss, val_auc, val_pr_auc, or val_macro_f1

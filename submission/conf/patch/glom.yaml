@@ -1,0 +1,5 @@
+patch:
+  segmentation_type: glomerulus
+  layer_ids: [2]
+  paths:
+    xml_dir: /home/khdp-user/workspace/dataset/Annotation/Glomerulus

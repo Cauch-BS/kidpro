@@ -1,0 +1,29 @@
+paths:
+  root_dir: /home/khdp-user/workspace/output/MIL_patch
+  cache_dir: /home/khdp-user/workspace/output
+  wsi_cache_dir: /home/khdp-user/workspace/output/MIL_cache
+  runs_root: /home/khdp-user/workspace/output/MIL_run_cls
+  csv_name: dataset.csv
+  label_csv: /home/khdp-user/workspace/dataset/CSV/GT_label.csv
+  wsi_dir: /home/khdp-user/workspace/dataset/Slide
+  wsi_ext: .svs
+  tiles_key: tiles
+
+task:
+  type: mil
+  num_classes: 2
+
+data:
+  # Training tile size. If preprocessing uses 512px at 40x, this resize yields
+  # ~20x FOV; prov_gigapath then center-crops to 224.
+  patch_size: 256
+  train_ratio: 0.8
+  test_ratio: 0.0
+  val_ratio: 0.2
+  num_workers: 16
+  pin_memory: true
+  mil_cache:
+    enabled: true
+    chunk_size: 64
+    memory_max_slides: 0
+    cache_tile_embeddings: true

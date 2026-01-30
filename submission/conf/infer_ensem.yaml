@@ -1,0 +1,47 @@
+defaults:
+  - hydra: default
+  - model: prov_gigapath
+  - train: default_wsi
+  - dataset: wsi
+  - mlflow: disabled
+  - core: default
+  - _self_
+
+# In inference we expect to load slide weights from `infer_ensem.wsi_weights_path`,
+# so don't preload a separate slide encoder checkpoint.
+model:
+  longnet_pretrained: false
+
+# CSV inference using cached MIL embeddings.
+infer_ensem:
+  # --- Input / output ---
+  # Default to the dataset's label CSV so paths stay consistent with `dataset=wsi`
+  # (override on the CLI if you want a different CSV).
+  csv_path: ${dataset.paths.label_csv}
+  output_dir: ${hydra:run.dir}
+  output_csv: submission.csv
+
+  # --- Column mapping ---
+  # slide_id_col: the column that contains the slide identifier (used to resolve paths + output ID).
+  # split_col: the column used to filter "test" rows for output.
+  slide_id_col: SlideName
+  gt_col: GT
+  split_col: split
+  test_value: test
+  # If set (e.g. val|test|train), metrics are computed only on that split.
+  # If null/empty, metrics are computed on all rows with GT.
+  metric_split: null
+
+  # --- Inference settings ---
+  threshold: 0.5
+  amp: auto                # auto|true|false
+  require_cached_embeddings: false
+
+  # --- Weights ---
+  # WSI checkpoint containing slide_encoder + classifier weights.
+  # If null, falls back to models/best_model.pt (repo-relative).
+  # If set to null/empty, infer_ensem will *not* load slide weights (random-init slide encoder).
+  wsi_weights_path: models/slide_encoder.pt 
+  # Optional: tile-encoder checkpoint path (loaded into model.tile_encoder).
+  # If null, the foundation/default weights from `model.weights` are used.
+  tile_encoder_weights_path: models/tile_encoder.pth

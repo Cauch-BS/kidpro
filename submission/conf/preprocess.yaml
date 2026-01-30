@@ -1,0 +1,25 @@
+defaults:
+  - hydra: preprocess
+  - hydra/job_logging: debug_file
+  - _self_
+
+paths:
+  run_root: /home/khdp-user/workspace/output
+  cache_dir: /home/khdp-user/workspace/output/MIL_cache
+  label_csv: /home/khdp-user/workspace/dataset/CSV/GT_label.csv
+  wsi_dir: /home/khdp-user/workspace/dataset/Slide
+  wsi_ext: .svs
+
+data:
+  # Raw tile size at slide resolution. For 40x WSIs, 512px ≈ 20x FOV
+  # after downstream resizing to 256px (model input is center-cropped to 224).
+  patch_size: 512
+
+preprocess:
+  level: 0
+  overwrite: false
+  tiles_key: tiles
+
+logging:
+  level: INFO
+  log_file: preprocess.log

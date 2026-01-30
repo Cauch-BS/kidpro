@@ -1,0 +1,16 @@
+paths:
+  root_dir: /home/khdp-user/workspace/output/Glom_patch
+  runs_root: /home/khdp-user/workspace/output/Glom_runs
+  csv_name: dataset.csv
+
+task:
+  type: binary
+  layer_ids: [2]
+
+data:
+  patch_size: 256
+  train_ratio: 0.6
+  test_ratio: 0.2
+  val_ratio: 0.2
+  num_workers: 4
+  pin_memory: true
